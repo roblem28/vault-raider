@@ -103,31 +103,66 @@ export const TUNING = {
   layoutCount: 3
 };
 
-// ---------------------------------------------------------------------------
-// SCHEDULER CONSTANTS - deliberately NOT part of TUNING.
+// ===========================================================================
+// INVENTED CONSTANTS - NOT TRANSCRIBED FROM SPEC.
 //
-// NOT TRANSCRIBED FROM SPEC. This is the one invented number in the project.
+// Everything in TUNING above comes from SPEC section 6. Everything below was
+// invented while building, and is exported separately so it can never be
+// mistaken for a transcribed value. SPEC section 6.1 carries the same split.
 //
-// It is segregated here because it is a SCHEDULER constant, not a SIMULATION
-// constant, and that distinction is what makes it safe:
+// THE THREE BLOCKS HAVE DIFFERENT PROVENANCE AND DIFFERENT RISK. Do not apply
+// one block's rationale to another by analogy - that is the specific mistake
+// this segregation exists to prevent.
+// ===========================================================================
+
+// --- SCHEDULER -------------------------------------------------------------
+// Not transcribed | UNREACHABLE from update() | determinism-NEUTRAL
 //
-//   update() always receives a fixed DT. Wall-clock jitter changes WHEN a tick
-//   fires, never WHAT happens inside one. Determinism is therefore unaffected -
-//   but only while that separation holds.
-//
-// NO CODE REACHABLE FROM update() MAY READ THIS. If a game rule ever depends on
-// it, the scheduler has entered the simulation and the approval is void.
-// Only src/core/loop.js may import it.
+// Safe precisely BECAUSE it is unreachable from update(). update() always
+// receives a fixed dt, so wall-clock jitter changes WHEN a tick fires, never
+// WHAT happens inside one. src/core/loop.js is the only permitted importer; if
+// a game rule ever reads this, the scheduler has entered the simulation and the
+// approval is void.
 //
 // Cause: IEEE-754. A refresh rate whose frame time does not divide cleanly into
 // one second leaves the accumulator a few ulps short of a whole step, so the
-// loop runs a permanent one tick behind. 144 Hz is the case that bites - 144
-// additions of 1/144 sum to just under 1.0, so the 60th update of every second
-// slips a frame, forever (59, 119, 179 ...). A constant phase offset, not
-// compounding drift. Far smaller than a tick, far larger than float noise.
+// loop runs a permanent one tick behind. At 144 Hz, 144 additions of 1/144 sum
+// to just under 1.0 and the 60th update of every second slips a frame, forever
+// (59, 119, 179 ...). A constant phase offset, not compounding drift.
 //
-// See docs/NOTES.md A7. Covered by tests/loop.mjs.
+// docs/NOTES.md A7. Covered by tests/loop.mjs.
 export const SCHEDULER = { accumulatorEpsilonSec: 1e-9 };
+
+// --- GEOM ------------------------------------------------------------------
+// Not transcribed | INSIDE simulation | determinism-CRITICAL
+//
+// THE OPPOSITE CASE FROM SCHEDULER. These are read from code reachable by
+// update(), so they carry none of SCHEDULER's protection: changing either one
+// changes what happens in the game and invalidates every recorded replay.
+//
+// docs/NOTES.md M2-A2.
+export const GEOM = {
+  // Half-open tile intervals. Without it a box whose edge lands exactly on
+  // x=8 claims tile 1 AND tile 2.
+  boxEdgeEpsilonPx: 1e-9,
+  // "Close enough to zero that it is not a step at all."
+  zeroStepEpsilonPx: 1e-6
+};
+
+// --- UNSTICK ---------------------------------------------------------------
+// Not transcribed | INSIDE simulation | determinism-CRITICAL | BALANCE-AFFECTING
+//
+// The highest-risk block. Like GEOM these are reachable from update(), and on
+// top of that they set how long a barrier shelters PIP - which section 4.3
+// calls his only defensive tool. Measured baseline on floor 1: median catch
+// 33 s, worst 48 s, against a 45 s floor timer.
+//
+// These are the knobs to turn at the feel gate. See docs/NOTES.md M2-B3.
+export const UNSTICK = {
+  afterTicks: 45,        // no-progress window before a WARDEN is judged wedged
+  minSpanPx: 12,         // motion bounding-box under this = wedged (1.5 tiles)
+  slideTicks: 60         // committed slide; ignores the target while it runs
+};
 
 // 8-way direction sectors. Index 0..7, clockwise from North.
 // Screen space: -y is North. DIR_NEUTRAL is -1.

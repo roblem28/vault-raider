@@ -1,7 +1,7 @@
-# VAULT RAIDER — Game Spec v0.7
+# VAULT RAIDER — Game Spec v0.8
 **An arcade dungeon crawler in the tradition of Venture (Exidy 1981 /
 ColecoVision 1982)** — nominative reference, see §0.1
-Date: 2026-07-30 · Owner: Box of Rox LLC · Supersedes v0.6
+Date: 2026-07-30 · Owner: Box of Rox LLC · Supersedes v0.7
 
 Changes from v0.1 are marked **[v0.2]**. Changes from v0.2 are marked **[v0.3]**
 (build output naming, deployment §16). Changes from v0.3 are marked **[v0.4]**
@@ -23,6 +23,10 @@ into §6 (§4.1, §4.3, §4.4, §9), the §6 completeness claim **deleted** and
 replaced with a checkable invariant after being wrong twice, the scheduler
 constant block (§6.1), §17.1.1's tick-by-tick counter-example, and
 `tests/loop.mjs` added to §12.1 as a sixth test file.
+Changes from v0.7 are marked **[v0.8]** — what M2 found by building floor view:
+§4.3.1's corner-clipping unstick, the §7.1 floor-authoring invariants (§7.1's
+own example violated them), §14's M2 row no longer naming a WARDEN count that
+contradicts §4.3, and §6.1 split into three constant blocks by provenance.
 
 ---
 
@@ -255,7 +259,58 @@ identically so it cannot desync a replay.
 - On intrusion: spawns at a room door, switches to pure chase, ignores geometry cost.
 - Count per floor layout: `wardenCount = [2, 3, 4]` by layout index, `+1` per full 3-floor cycle. **[v0.5]** Formula stated exactly in §2.1.
 - Immune to everything, always.
-- **[v0.5]** Hurt box **8×8 centered** (§4.1). WARDENs have no collision box — they are unblockable by definition, so nothing tests them against geometry for movement.
+- **[v0.5]** Hurt box **8×8 centered** (§4.1). WARDENs have no collision box against *actors*, but they DO resolve against walls — §4.5 says walls block them *badly*, not not-at-all.
+
+#### **[v0.7]** 4.3.1 Corner clipping — the unstick rule
+
+§4.5 allows walls to impede a WARDEN by "slow corner clipping only". That
+clause is load-bearing and this section states what it means, because M2
+measured what happens without it.
+
+A purely greedy chaser **cannot step away from PIP**, so any barrier between
+them grants PIP *permanent* immunity rather than cover. Measured at M2: PIP
+stood at the floor-1 spawn untouched for 150 s while both WARDENs oscillated
+between two adjacent tiles, one of them logging 3149 and 3120 visits to the
+same pair. That is not "deliberately poor navigation" — it is a WARDEN that has
+stopped being a threat, and it makes the floor trivially safe.
+
+The rule:
+
+- Track the SPAN of motion over `unstickAfterTicks` - the bounding box the
+  WARDEN stayed inside. If that span is under `unstickMinSpanPx`, it is wedged.
+  Span, not net displacement: oscillating between two adjacent tiles is 8 px of
+  travel, so a net-displacement check passes while the WARDEN is plainly stuck.
+- Resolve the **dominant axis first** when chasing. Generic axis-separated
+  movement always resolves X before Y, which is right for PIP and wrong for a
+  chaser: a WARDEN north-west of a barrier has a large southward pull and a
+  small eastward one, and X-first spends the tick on the small eastward step
+  back into the trap before the southward escape is attempted.
+- Abort the slide when the **dominant axis** opens up — *not* when any greedy
+  step becomes viable. Aborting on any movement makes the slide useless: the
+  small off-axis step that caused the trap is still viable, so one tick of
+  sliding is immediately undone and the WARDEN never travels the ~8 px needed
+  to clear the obstacle. Measured: aborting on any movement left 8 of 40 seeds
+  with a permanently safe PIP; aborting on the dominant axis left 0 of 40.
+- A fixed-duration slide that never aborts is also wrong — it bounces inside a
+  2-tile corridor instead of resuming the chase once clear.
+- On wedging, commit to sliding along one perpendicular axis for
+  `unstickSlideTicks`, **ignoring the target entirely** during the slide.
+  Reverse the slide direction if that way is walled too.
+- Handedness is fixed per WARDEN at creation, never re-rolled. Re-rolling was
+  measured and fails: scraping a wall lets the greedy step partially succeed on
+  most ticks, clearing the wedge flag and triggering a fresh roll, so the WARDEN
+  oscillates in place instead of travelling far enough to find the gap.
+
+**This is NOT pathfinding and must never become pathfinding** (§4.3). The WARDEN
+picks a direction blindly and has no idea whether it helps; it frequently
+commits to the wrong way round and takes a long time. That is the intended
+texture. What it may not do is stop threatening PIP forever.
+
+Barriers therefore give **temporary cover, not immunity** — which is what makes
+them a tool rather than a win condition.
+
+The three constants are **invented, not transcribed** from any other section.
+See `docs/NOTES.md` M2-A1.
 
 ### 4.4 Room monster archetypes
 
@@ -424,36 +479,46 @@ export const TUNING = {
 };
 ```
 
-### **[v0.7]** 6.1 Scheduler constants — deliberately NOT in `TUNING`
+### **[v0.8]** 6.1 Invented constants — three blocks, three risk levels
+
+Everything in §6 above is transcribed from this document. Everything here was
+**invented while building** and is exported separately from `TUNING` so it can
+never be mistaken for a transcribed value.
+
+**The three blocks have different provenance and different risk. Do not apply
+one block's rationale to another by analogy** — that is the specific mistake
+this segregation exists to prevent.
+
+| Block | Transcribed? | Reachable from `update()`? | Risk |
+|---|---|---|---|
+| `SCHEDULER` | no | **no** | determinism-neutral |
+| `GEOM` | no | **yes** | determinism-critical |
+| `UNSTICK` | no | **yes** | determinism-critical **and balance-affecting** |
 
 ```js
 export const SCHEDULER = { accumulatorEpsilonSec: 1e-9 };
+export const GEOM      = { boxEdgeEpsilonPx: 1e-9, zeroStepEpsilonPx: 1e-6 };
+export const UNSTICK   = { afterTicks: 45, minSpanPx: 12, slideTicks: 60 };
 ```
 
-**This is the only invented number in the project.** Everything in `TUNING` is
-transcribed from this document; this is not, and it is exported separately so it
-cannot be mistaken for one.
+**`SCHEDULER`** — safe *precisely because* it is unreachable from `update()`.
+`update()` always receives a fixed `dt`, so wall-clock jitter changes **when** a
+tick fires, never **what** happens inside one. `src/core/loop.js` is the only
+permitted importer. If a game rule ever reads it, the scheduler has entered the
+simulation and this approval is void. Replay must not go through
+`requestAnimationFrame` (§12.1.2). Cause: IEEE-754 — see §12.1 and NOTES A7.
 
-> **IT IS A SCHEDULER CONSTANT, NOT A SIMULATION CONSTANT.**
-> `update()` always receives a fixed `dt`. Wall-clock jitter changes **when** a
-> tick fires, never **what** happens inside one. Determinism is therefore
-> unaffected — but only while that separation holds.
+**`GEOM`** — the opposite case. Read from code reachable by `update()`, so it
+carries none of `SCHEDULER`'s protection: changing either value changes what
+happens in the game and invalidates every recorded replay.
+`boxEdgeEpsilonPx` makes tile intervals half-open; `zeroStepEpsilonPx` is the
+"not a step at all" threshold in WARDEN chase stepping. NOTES M2-A2.
 
-Rules:
-
-- **No code reachable from `update()` may read it.** `src/core/loop.js` is the
-  only permitted importer. If a game rule ever depends on it, the scheduler has
-  entered the simulation and this section is void.
-- **Replay must not go through `requestAnimationFrame`.** The headless
-  recorder/player (§12.1.2) steps `update()` directly. `tests/loop.mjs` asserts
-  a recorded stream replays with no loop, clock, or scheduler.
-
-Cause, recorded so nobody "cleans it up": IEEE-754. A refresh rate whose frame
-time does not divide cleanly into one second leaves the accumulator a few ulps
-short of a whole step, so the loop runs a permanent one tick behind. At 144 Hz,
-144 additions of `1/144` sum to just under 1.0 and the 60th update of every
-second slips a frame — 59, 119, 179, forever. A constant phase offset, not
-compounding drift, which is exactly why a short test cannot see it.
+**`UNSTICK`** — highest risk. Reachable from `update()` like `GEOM`, and on top
+of that it sets **how long a barrier shelters PIP**, which §4.3 calls his only
+defensive tool. Measured baseline on floor 1: median catch 33 s, worst 48 s,
+against a 45 s floor timer. These are feel-gate knobs. See §4.3.1 and NOTES
+M2-A1 / M2-B3.
 
 **[v0.5] Indexing rules for the arrays above.** `floorTimerSec`,
 `warden.speedMul`, `warden.countByLayout`, and `scoring.treasureByFloor` are all
@@ -487,20 +552,50 @@ All numbers above are original-*inspired*, not original-accurate. The arcade sco
   "layoutIndex": 0,
   "spawn": { "tx": 5, "ty": 25 },
   "mask": ["########################################", "…30 rows of 40 chars, '#'=wall '.'=floor…"],
-  "barriers": [ { "tx": 11, "ty": 7, "tw": 5, "th": 1 } ],
+  "barriers": [ { "tx": 12, "ty": 4, "tw": 5, "th": 1 } ],
   "wardenRoutes": [
     { "waypoints": [[3,3],[36,3],[36,26],[3,26]], "startIdx": 0 },
     { "waypoints": [[20,3],[20,26]], "startIdx": 1 }
   ],
   "rooms": [
-    { "id": "slabs",   "door": { "tx": 6,  "ty": 19 }, "rect": [5,16,6,5] },
-    { "id": "coil",    "door": { "tx": 6,  "ty": 5  }, "rect": [5,3,6,5] },
-    { "id": "ossuary", "door": { "tx": 33, "ty": 5  }, "rect": [30,3,6,5] },
-    { "id": "warrens", "door": { "tx": 33, "ty": 19 }, "rect": [30,16,6,5] }
+    { "id": "coil",    "door": { "tx": 10, "ty": 7  }, "rect": [6,7,9,6] },
+    { "id": "ossuary", "door": { "tx": 28, "ty": 7  }, "rect": [24,7,9,6] },
+    { "id": "slabs",   "door": { "tx": 10, "ty": 22 }, "rect": [6,17,9,6] },
+    { "id": "warrens", "door": { "tx": 28, "ty": 22 }, "rect": [24,17,9,6] }
   ],
   "stairs": { "tx": 20, "ty": 15, "lockedUntilAllLooted": true }
 }
 ```
+
+#### **[v0.8]** 7.1.1 Floor-authoring invariants — ENFORCED, not advisory
+
+**The coordinates above were wrong until v0.8.** The example had door `(6,19)`
+sitting in the *interior* of rect `[5,16,6,5]` rather than on its perimeter, and
+its room rects overlapped the corridor implied by its own warden waypoints. A
+schema illustration that violates its own rules misleads whoever authors the
+next floor, and eleven more rooms get authored at M4 and M7.
+
+Every floor must satisfy all of these. `tests/floors.mjs` checks each one for
+every layout — an invariant that exists only in prose is the same class of thing
+as the banned-PRNG rule was before `determinism.mjs` existed.
+
+1. **The door tile lies ON the room rect's perimeter**, never inside it.
+2. **The door tile is the ONLY tile of the rect that is floor**, and it is
+   adjacent to corridor. The rest of the rect is solid.
+3. **No room rect contains a warden route waypoint**, nor any tile on the
+   straight segment between consecutive waypoints. A rect swallowing a patrol
+   line strands a WARDEN, and §4.3 forbids giving them pathfinding to escape.
+4. **Room rects do not overlap each other.**
+5. Spawn, all four doors, and the stairs are mutually reachable on the mask
+   (already enforced since M2).
+6. **Every 1-tile gap is passable by PIP's collision box from every approach
+   direction whose entry tile is floor, at 60 Hz and 30 Hz, at every sub-pixel
+   alignment.** This is the softlock `winnability.mjs` structurally cannot find:
+   its BFS is tile-based and does not model the hitbox at all.
+
+Barriers are static walls in floor view (§4.5 `WALL`) and are baked into the
+mask. The `barriers` array is retained for renderer hinting and for M3's
+`SLIDING_BARRIER` room hazards, which are a different mechanic sharing a name.
 
 ### 7.2 Room
 
@@ -608,10 +703,10 @@ Procedural, no asset files.
 
 | Test | Asserts |
 |---|---|
-| `tests/winnability.mjs` | For **all 12 rooms**: BFS on the tilemap with monsters ignored finds door → treasure → door. Fails the build otherwise. This is the guard for "every room beatable kill-free." |
-| `tests/determinism.mjs` | Same seed + same recorded input stream → identical final state hash across two runs. Also greps `src/` for `Math.random` and fails on any hit. |
-| `tests/timer.mjs` | Floor timer monotonic across simulated room enter/exit/enter; unchanged by a simulated death; unchanged by zoom transitions. |
-| `tests/floors.mjs` | Every floor: spawn reaches all 4 doors and the stairs on the corridor mask; every warden waypoint sits on a floor tile. |
+| `tests/winnability.mjs` | For **all 12 rooms**: BFS on the tilemap with monsters ignored finds door → treasure → door. Fails the build otherwise. This is the guard for "every room beatable kill-free." **[v0.7]** Lands at M3 (one room), all twelve at M7. |
+| `tests/determinism.mjs` | Same seed + same recorded input stream → identical final state hash across two runs. Also greps `src/` for the banned platform PRNG and fails on any hit. **[v0.7]** Landed at **M2**, earlier than planned: until it existed the PRNG ban had no automated enforcement at all, and an unenforced hard rule is a comment. |
+| `tests/timer.mjs` | Floor timer monotonic across simulated room enter/exit/enter; unchanged by a simulated death; unchanged by zoom transitions. **[v0.7]** Landed at M2 covering death and respawn; room enter/exit and zoom join at M3. |
+| `tests/floors.mjs` | Every floor: spawn reaches all 4 doors and the stairs on the corridor mask; every warden waypoint sits on a floor tile. **[v0.7]** Landed at M2, plus §4.3.1's guard that no barrier grants a stationary PIP permanent immunity. |
 
 Run: `node tests/winnability.mjs && node tests/determinism.mjs && node tests/timer.mjs && node tests/floors.mjs`
 
@@ -762,7 +857,7 @@ node tests\winnability.mjs        # etc.
 | # | Milestone | Validation |
 |---|---|---|
 | M1 | Loop (clamped accumulator, 5-substep cap), 320×240 scaling, seeded RNG, **[v0.4]** unified input model per §17.1 with latched facing | Debug rect at exactly 60 Hz on a 144 Hz display; tab-away 30 s causes no burst |
-| M2 | Floor view: 40×30 mask, axis-separated collision, 1 WARDEN on a route, death on contact, **hall firing** | Loop the corridor, get killed, fire a useless arrow through a WARDEN |
+| M2 | Floor view: 40×30 mask, axis-separated collision, **[v0.8]** WARDENs per §4.3 (`countByLayout`, so 2 on floor 1), death on contact, **hall firing** | Loop the corridor, get killed, fire a useless arrow through a WARDEN |
 | **M3** | **VERTICAL SLICE** — one room (`THE COIL`), zoom in/out, arrow + one-alive rule, `CRAWLER` + dodge, corpse decay/lethality/blocking, treasure + safe tile, floor timer + intrusion + siren | **FEEL GATE §12.3.** Full tension arc playable in one room |
 | M4 | Room sealing, all 4 Floor-1 rooms, stairs unlock, floor descend | Loot floor 1, descend |
 | M5 | Death handling: life loss, corpse clear, unlooted-room reset, timer untouched, respawn invuln | `tests/timer.mjs` green; deliberate softlock attempt fails to softlock |

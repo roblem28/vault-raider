@@ -32,7 +32,13 @@ MANIFEST = [
     "core/rng.js",
     "core/input.js",
     "core/loop.js",
+    "data/floors.js",
+    "game/collision.js",
+    "game/entities.js",
+    "game/floor.js",
+    "game/state.js",
     "core/gfx.js",
+    "game/render.js",
     "main.js",
 ]
 

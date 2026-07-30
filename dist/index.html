@@ -54,7 +54,7 @@ body {
 <canvas id="vr-canvas" width="320" height="240"></canvas>
 <script type="module">
 // ---- data/tuning.js ----
-// VAULT RAIDER - tuning constants. SPEC v0.6 section 6.
+// VAULT RAIDER - tuning constants. SPEC v0.7 section 6.
 //
 // THE ONLY PLACE CONSTANTS LIVE. No logic file may carry a magic number.
 // Values here are transcribed from SPEC section 6; where SPEC states a value
@@ -159,31 +159,66 @@ const TUNING = {
   layoutCount: 3
 };
 
-// ---------------------------------------------------------------------------
-// SCHEDULER CONSTANTS - deliberately NOT part of TUNING.
+// ===========================================================================
+// INVENTED CONSTANTS - NOT TRANSCRIBED FROM SPEC.
 //
-// NOT TRANSCRIBED FROM SPEC. This is the one invented number in the project.
+// Everything in TUNING above comes from SPEC section 6. Everything below was
+// invented while building, and is exported separately so it can never be
+// mistaken for a transcribed value. SPEC section 6.1 carries the same split.
 //
-// It is segregated here because it is a SCHEDULER constant, not a SIMULATION
-// constant, and that distinction is what makes it safe:
+// THE THREE BLOCKS HAVE DIFFERENT PROVENANCE AND DIFFERENT RISK. Do not apply
+// one block's rationale to another by analogy - that is the specific mistake
+// this segregation exists to prevent.
+// ===========================================================================
+
+// --- SCHEDULER -------------------------------------------------------------
+// Not transcribed | UNREACHABLE from update() | determinism-NEUTRAL
 //
-//   update() always receives a fixed DT. Wall-clock jitter changes WHEN a tick
-//   fires, never WHAT happens inside one. Determinism is therefore unaffected -
-//   but only while that separation holds.
-//
-// NO CODE REACHABLE FROM update() MAY READ THIS. If a game rule ever depends on
-// it, the scheduler has entered the simulation and the approval is void.
-// Only src/core/loop.js may import it.
+// Safe precisely BECAUSE it is unreachable from update(). update() always
+// receives a fixed dt, so wall-clock jitter changes WHEN a tick fires, never
+// WHAT happens inside one. src/core/loop.js is the only permitted importer; if
+// a game rule ever reads this, the scheduler has entered the simulation and the
+// approval is void.
 //
 // Cause: IEEE-754. A refresh rate whose frame time does not divide cleanly into
 // one second leaves the accumulator a few ulps short of a whole step, so the
-// loop runs a permanent one tick behind. 144 Hz is the case that bites - 144
-// additions of 1/144 sum to just under 1.0, so the 60th update of every second
-// slips a frame, forever (59, 119, 179 ...). A constant phase offset, not
-// compounding drift. Far smaller than a tick, far larger than float noise.
+// loop runs a permanent one tick behind. At 144 Hz, 144 additions of 1/144 sum
+// to just under 1.0 and the 60th update of every second slips a frame, forever
+// (59, 119, 179 ...). A constant phase offset, not compounding drift.
 //
-// See docs/NOTES.md A7. Covered by tests/loop.mjs.
+// docs/NOTES.md A7. Covered by tests/loop.mjs.
 const SCHEDULER = { accumulatorEpsilonSec: 1e-9 };
+
+// --- GEOM ------------------------------------------------------------------
+// Not transcribed | INSIDE simulation | determinism-CRITICAL
+//
+// THE OPPOSITE CASE FROM SCHEDULER. These are read from code reachable by
+// update(), so they carry none of SCHEDULER's protection: changing either one
+// changes what happens in the game and invalidates every recorded replay.
+//
+// docs/NOTES.md M2-A2.
+const GEOM = {
+  // Half-open tile intervals. Without it a box whose edge lands exactly on
+  // x=8 claims tile 1 AND tile 2.
+  boxEdgeEpsilonPx: 1e-9,
+  // "Close enough to zero that it is not a step at all."
+  zeroStepEpsilonPx: 1e-6
+};
+
+// --- UNSTICK ---------------------------------------------------------------
+// Not transcribed | INSIDE simulation | determinism-CRITICAL | BALANCE-AFFECTING
+//
+// The highest-risk block. Like GEOM these are reachable from update(), and on
+// top of that they set how long a barrier shelters PIP - which section 4.3
+// calls his only defensive tool. Measured baseline on floor 1: median catch
+// 33 s, worst 48 s, against a 45 s floor timer.
+//
+// These are the knobs to turn at the feel gate. See docs/NOTES.md M2-B3.
+const UNSTICK = {
+  afterTicks: 45,        // no-progress window before a WARDEN is judged wedged
+  minSpanPx: 12,         // motion bounding-box under this = wedged (1.5 tiles)
+  slideTicks: 60         // committed slide; ignores the target while it runs
+};
 
 // 8-way direction sectors. Index 0..7, clockwise from North.
 // Screen space: -y is North. DIR_NEUTRAL is -1.
@@ -698,6 +733,814 @@ function createLoop(opts) {
   return loop;
 }
 
+// ---- data/floors.js ----
+// VAULT RAIDER - floor layouts. SPEC v0.7 section 7.1.
+//
+// M2 ships layout 0 only. Layouts 1 and 2 arrive at M7.
+//
+// Mask is 30 rows of 40 chars, '#' wall, '.' floor. Tile is 8 px, so this is
+// exactly 320x240 - the one grid (section 1).
+//
+// Geometry, so a future edit does not break it by accident:
+//   - Ring corridor 2 tiles wide. Warden route 1 rides the OUTER lane
+//     (x=3, y=3, x=36, y=26), which is why every barrier below blocks the
+//     INNER lane only. A barrier across an outer lane would seal a patrol
+//     route and strand a WARDEN.
+//   - Central vertical corridor x=20..21 carries warden route 2 and reaches
+//     the stairs at (20,15).
+//   - Each room door is a 1-TILE notch. These are the tight gaps that
+//     section 4.1's 6x6 hitbox and doorway snap-assist exist for. Do not widen
+//     them to "fix" movement feel - fix the assist instead.
+//   - Barriers are baked into the mask as wall, not carried as a separate
+//     array. See docs/NOTES.md M2-D1.
+//
+// Validated by tests/floors.mjs: spawn reaches all 4 doors and the stairs,
+// and every warden waypoint sits on a floor tile.
+//
+// No DOM access. Safe to import from tests/.
+
+const FLOOR_LAYOUTS = [
+  {
+    id: 'floor1',
+    layoutIndex: 0,
+    spawn: { tx: 5, ty: 25 },
+    mask: [
+      '########################################',
+      '########################################',
+      '########################################',
+      '###..................................###',
+      '###.........#####.......####.........###',
+      '###..#####.#########..######.######..###',
+      '###..#####.#########..######.######..###',
+      '###..#####.#########..######.######..###',
+      '###..###############..#############..###',
+      '###..###############..#############..###',
+      '###..###############..#############..###',
+      '###..###############..#############..###',
+      '###.################..##############.###',
+      '###.################..##############.###',
+      '###.################..##############.###',
+      '###.################..##############.###',
+      '###.################..##############.###',
+      '###..###############..#############..###',
+      '###..###############..#############..###',
+      '###..###############..#############..###',
+      '###..###############..#############..###',
+      '###..###############..#############..###',
+      '###..#####.#########..######.######..###',
+      '###..#####.#########..######.######..###',
+      '###..#####.#########..######.######..###',
+      '###.........#####.......####.........###',
+      '###..................................###',
+      '########################################',
+      '########################################',
+      '########################################'
+    ],
+    wardenRoutes: [
+      { waypoints: [[3, 3], [36, 3], [36, 26], [3, 26]], startIdx: 0 },
+      { waypoints: [[20, 3], [20, 26]], startIdx: 1 }
+    ],
+    rooms: [
+      { id: 'coil', door: { tx: 10, ty: 7 }, rect: [6, 7, 9, 6] },
+      { id: 'ossuary', door: { tx: 28, ty: 7 }, rect: [24, 7, 9, 6] },
+      { id: 'slabs', door: { tx: 10, ty: 22 }, rect: [6, 17, 9, 6] },
+      { id: 'warrens', door: { tx: 28, ty: 22 }, rect: [24, 17, 9, 6] }
+    ],
+    stairs: { tx: 20, ty: 15, lockedUntilAllLooted: true }
+  }
+];
+
+// SPEC section 2.1 - ONE clamp, ONE place. Every value that escalates with
+// depth derives from effectiveFloorIndex. Clamping anywhere else is a defect.
+function floorDescriptorFor(floorIndex, tuning) {
+  const effectiveFloorIndex = Math.min(floorIndex, tuning.maxFloorIndex);
+  const layoutIndex = effectiveFloorIndex % tuning.layoutCount;
+  return {
+    floorIndex,                 // raw: display and score accumulation ONLY
+    effectiveFloorIndex,
+    layoutIndex,
+    layout: FLOOR_LAYOUTS[layoutIndex % FLOOR_LAYOUTS.length],
+    speedMul: tuning.floorSpeedMul[effectiveFloorIndex],
+    floorTimerSec: tuning.warden.floorTimerSec[layoutIndex],
+    wardenSpeedMul: tuning.warden.speedMul[layoutIndex],
+    wardenCount: tuning.warden.countByLayout[layoutIndex] +
+      Math.floor(effectiveFloorIndex / tuning.layoutCount),
+    treasureValue: tuning.scoring.treasureByFloor[layoutIndex]
+  };
+}
+
+// ---- game/collision.js ----
+// VAULT RAIDER - collision. SPEC v0.7 sections 3.5, 4.1, 4.5.
+//
+// TWO SEPARATE CONCEPTS, and they must stay separate (section 4.1):
+//   - COLLISION box: tested against tiles, resolves movement.
+//   - HURT box: tested against other actors via aabbOverlap, deals death.
+// They are equal in size for PIP and are still two named values, so a feel-gate
+// change to one cannot silently move the other.
+//
+// Corpse blocking is TILE-OCCUPANCY, never AABB (section 3.5). That path
+// arrives with corpses at M3; isTileBlocked already takes the hook so movement
+// has exactly one place to consult it.
+//
+// No DOM access. Safe to import from tests/.
+
+
+function aabbOverlap(ax, ay, aw, ah, bx, by, bw, bh) {
+  return ax < bx + bw && ax + aw > bx && ay < by + bh && ay + ah > by;
+}
+
+function isSolidChar(ch) {
+  return ch !== TILE_CHARS.FLOOR;
+}
+
+function tileAt(mask, tx, ty) {
+  if (ty < 0 || ty >= mask.length) return TILE_CHARS.WALL;
+  const row = mask[ty];
+  if (tx < 0 || tx >= row.length) return TILE_CHARS.WALL;
+  return row[tx];
+}
+
+function tileAtPx(mask, px, py) {
+  return tileAt(mask, Math.floor(px / TUNING.tile), Math.floor(py / TUNING.tile));
+}
+
+// Single consultation point for "is this tile solid to PIP right now".
+// blockedTiles is an optional Set of "tx,ty" keys - corpses at M3 (section 3.5).
+function isTileBlocked(mask, tx, ty, blockedTiles) {
+  if (isSolidChar(tileAt(mask, tx, ty))) return true;
+  if (blockedTiles && blockedTiles.has(tx + ',' + ty)) return true;
+  return false;
+}
+
+// Does an axis-aligned box overlap any blocked tile?
+function boxHitsTiles(mask, x, y, w, h, blockedTiles) {
+  const tx0 = Math.floor(x / TUNING.tile);
+  const ty0 = Math.floor(y / TUNING.tile);
+  // Tile intervals are half-open; see GEOM in tuning.js.
+  const eps = GEOM.boxEdgeEpsilonPx;
+  const tx1 = Math.floor((x + w - eps) / TUNING.tile);
+  const ty1 = Math.floor((y + h - eps) / TUNING.tile);
+  for (let ty = ty0; ty <= ty1; ty++) {
+    for (let tx = tx0; tx <= tx1; tx++) {
+      if (isTileBlocked(mask, tx, ty, blockedTiles)) return true;
+    }
+  }
+  return false;
+}
+
+// AXIS-SEPARATED resolution. X is resolved fully, then Y independently.
+//
+// This is what lets PIP slide along a wall instead of stopping dead when a
+// diagonal input drives him into it. Resolving both axes together would make
+// every diagonal approach to a corridor wall a full stop, which is the classic
+// "sticky corner" arcade movement bug.
+//
+// Returns the resolved position plus which axes were blocked.
+function moveAxisSeparated(x, y, w, h, dx, dy, mask, blockedTiles) {
+  let nx = x;
+  let ny = y;
+  let blockedX = false;
+  let blockedY = false;
+
+  if (dx !== 0) {
+    const tryX = x + dx;
+    if (boxHitsTiles(mask, tryX, y, w, h, blockedTiles)) {
+      // Snap flush to the wall rather than leaving a sub-pixel gap, so repeated
+      // taps into a wall cannot accumulate drift.
+      nx = dx > 0
+        ? Math.ceil((x + w) / TUNING.tile) * TUNING.tile - w
+        : Math.floor(x / TUNING.tile) * TUNING.tile;
+      if (boxHitsTiles(mask, nx, y, w, h, blockedTiles)) nx = x;
+      blockedX = true;
+    } else {
+      nx = tryX;
+    }
+  }
+
+  if (dy !== 0) {
+    const tryY = y + dy;
+    if (boxHitsTiles(mask, nx, tryY, w, h, blockedTiles)) {
+      ny = dy > 0
+        ? Math.ceil((y + h) / TUNING.tile) * TUNING.tile - h
+        : Math.floor(y / TUNING.tile) * TUNING.tile;
+      if (boxHitsTiles(mask, nx, ny, w, h, blockedTiles)) ny = y;
+      blockedY = true;
+    } else {
+      ny = tryY;
+    }
+  }
+
+  return { x: nx, y: ny, blockedX, blockedY };
+}
+
+// Doorway snap-assist, SPEC section 4.1. REQUIRED, not a nicety.
+//
+// Slack alone is not enough to make a 1-tile gap enterable: the player must
+// otherwise be near-pixel-perfect on the perpendicular axis. When PIP is moving
+// toward a gap and is within snapAssistWindowPx of alignment, nudge him
+// snapAssistStepPx per tick toward it.
+//
+// Applies identically to every input source, so it cannot desync a replay.
+// Returns the corrected position.
+function applyDoorwaySnap(x, y, w, h, dx, dy, mask, blockedTiles) {
+  const win = TUNING.player.snapAssistWindowPx;
+  const step = TUNING.player.snapAssistStepPx;
+  let nx = x;
+  let ny = y;
+
+  // Moving horizontally: align on Y. Moving vertically: align on X.
+  if (dx !== 0 && dy === 0) {
+    const centerY = y + h / 2;
+    const target = (Math.floor(centerY / TUNING.tile) + 0.5) * TUNING.tile;
+    const delta = target - centerY;
+    if (delta !== 0 && Math.abs(delta) <= win) {
+      const move = Math.sign(delta) * Math.min(step, Math.abs(delta));
+      // Only assist if it actually unblocks the direction of travel.
+      if (!boxHitsTiles(mask, x + dx, y + move, w, h, blockedTiles)) ny = y + move;
+    }
+  } else if (dy !== 0 && dx === 0) {
+    const centerX = x + w / 2;
+    const target = (Math.floor(centerX / TUNING.tile) + 0.5) * TUNING.tile;
+    const delta = target - centerX;
+    if (delta !== 0 && Math.abs(delta) <= win) {
+      const move = Math.sign(delta) * Math.min(step, Math.abs(delta));
+      if (!boxHitsTiles(mask, x + move, y + dy, w, h, blockedTiles)) nx = x + move;
+    }
+  }
+
+  return { x: nx, y: ny };
+}
+
+function tileCenterPx(t) {
+  return t * TUNING.tile + TUNING.tile / 2;
+}
+
+// ---- game/entities.js ----
+// VAULT RAIDER - entities. SPEC v0.7 sections 3.2, 3.8, 3.9, 4.1, 4.2, 4.3.
+//
+// M2 scope: PIP in floor view, the arrow, and the WARDEN. Monsters and corpses
+// arrive at M3/M6.
+//
+// No DOM access. Safe to import from tests/.
+
+
+// --- PIP -------------------------------------------------------------------
+
+function createPlayer(tx, ty) {
+  return {
+    // Position is the top-left of the COLLISION box, not the sprite.
+    x: tileCenterPx(tx) - TUNING.player.hitboxFloor / 2,
+    y: tileCenterPx(ty) - TUNING.player.hitboxFloor / 2,
+    prevX: 0,
+    prevY: 0,
+    // PERSISTENT entity facing (section 17.1.1). NOT the input struct's
+    // facingLatch, which is a one-tick event. Starts East.
+    facing: 2,
+    lives: TUNING.player.startingLives,
+    invulnTicks: 0,
+    alive: true
+  };
+}
+
+function playerBox(player, inRoom) {
+  const s = inRoom ? TUNING.player.hitboxRoom : TUNING.player.hitboxFloor;
+  return { x: player.x, y: player.y, w: s, h: s };
+}
+
+// Hurt box is a SEPARATE query from the collision box (section 4.1), even
+// though the two are currently the same size.
+function playerHurtBox(player, inRoom) {
+  const s = inRoom ? TUNING.player.hurtboxRoom : TUNING.player.hurtboxFloor;
+  return { x: player.x, y: player.y, w: s, h: s };
+}
+
+function updatePlayerFloor(player, input, mask, speedMul, blockedTiles) {
+  player.prevX = player.x;
+  player.prevY = player.y;
+
+  // Section 3.9 / 17.1.1: facing latches on directional INPUT, in the same
+  // frame, whether or not movement was possible. Never derived from realized
+  // displacement. This assignment happens BEFORE movement on purpose - moving
+  // it below the collision resolution would reintroduce exactly that bug.
+  if (input.facingLatch !== DIR_NEUTRAL) player.facing = input.facingLatch;
+
+  if (input.dir === DIR_NEUTRAL) return;
+
+  const size = TUNING.player.hitboxFloor;
+  const d = DIRS[input.dir];
+  const speed = TUNING.player.speedFloor * speedMul;
+  const dx = d.dx * speed;
+  const dy = d.dy * speed;
+
+  const snapped = applyDoorwaySnap(player.x, player.y, size, size, dx, dy, mask, blockedTiles);
+  const moved = moveAxisSeparated(
+    snapped.x, snapped.y, size, size, dx, dy, mask, blockedTiles
+  );
+  player.x = moved.x;
+  player.y = moved.y;
+}
+
+// --- Arrow -----------------------------------------------------------------
+//
+// Section 3.8: exactly ONE alive at a time, no separate cooldown. Rate of fire
+// is gated purely by "is an arrow alive?", so a long miss is a long vulnerable
+// window. Section 3.2: firing in the hall is allowed and USELESS - the arrow is
+// real, travels, and passes straight through WARDENs. That is an intended
+// newbie trap, not a bug to fix.
+
+function createArrowState() {
+  return { alive: false, x: 0, y: 0, dir: 2, windup: 0, pending: false };
+}
+
+// THE one fire gate. Floor view and (from M3) room view both call this rather
+// than each keeping a copy - section 3.8 is "exactly one arrow alive, ever", and
+// two independently-maintained gates is how that stops being true.
+function requestFire(arrow) {
+  // Ignored while an arrow lives or a windup is already running. No separate
+  // cooldown exists, by design: a long miss IS the punishment.
+  if (arrow.alive || arrow.pending) return false;
+  arrow.pending = true;
+  arrow.windup = TUNING.arrow.windupTicks;
+  return true;
+}
+
+function updateArrow(arrow, player, mask) {
+  if (arrow.pending) {
+    arrow.windup--;
+    if (arrow.windup <= 0) {
+      arrow.pending = false;
+      arrow.alive = true;
+      // Section 4.2: direction is PIP's PERSISTENT ENTITY FACING at the SPAWN
+      // tick - not the fire-input tick, and never the input struct. This is
+      // what makes re-aiming during the 4-tick windup work.
+      arrow.dir = player.facing;
+      const size = TUNING.player.hitboxFloor;
+      arrow.x = player.x + size / 2;
+      arrow.y = player.y + size / 2;
+    }
+    return;
+  }
+  if (!arrow.alive) return;
+
+  const d = DIRS[arrow.dir];
+  arrow.x += d.dx * TUNING.arrow.speed;
+  arrow.y += d.dy * TUNING.arrow.speed;
+
+  if (arrow.x < 0 || arrow.y < 0 ||
+      arrow.x >= TUNING.logicalW || arrow.y >= TUNING.logicalH) {
+    arrow.alive = false;
+    return;
+  }
+  // Despawns on wall. Deliberately does NOT test WARDENs (section 3.2).
+  const tx = Math.floor(arrow.x / TUNING.tile);
+  const ty = Math.floor(arrow.y / TUNING.tile);
+  const row = mask[ty];
+  if (!row || row[tx] !== '.') arrow.alive = false;
+}
+
+// --- WARDEN ----------------------------------------------------------------
+//
+// Section 3.1: invulnerable. Not killable, slowable, or divertible.
+// Section 4.3: deliberately POOR at navigating corridor barriers. Barriers are
+// PIP's only defensive tool. DO NOT add pathfinding here - the bad navigation
+// is the mechanic, not a defect.
+
+function createWarden(route, speedMul, handedness) {
+  const wp = route.waypoints[route.startIdx % route.waypoints.length];
+  return {
+    x: tileCenterPx(wp[0]) - TUNING.warden.hurtbox / 2,
+    y: tileCenterPx(wp[1]) - TUNING.warden.hurtbox / 2,
+    prevX: 0,
+    prevY: 0,
+    waypoints: route.waypoints,
+    routeIdx: route.startIdx % route.waypoints.length,
+    speedMul,
+    // Corner-clipping state (section 4.3.1). Affects behaviour, so all of it is
+    // in the determinism hash. slideSign is fixed HANDEDNESS, set once here and
+    // never re-rolled - see updateWarden.
+    checkTicks: 0,
+    // Seeded to the spawn position, not 0, or the first wedge window measures a
+    // span from the origin and can never trip.
+    minX: tileCenterPx(wp[0]) - TUNING.warden.hurtbox / 2,
+    maxX: tileCenterPx(wp[0]) - TUNING.warden.hurtbox / 2,
+    minY: tileCenterPx(wp[1]) - TUNING.warden.hurtbox / 2,
+    maxY: tileCenterPx(wp[1]) - TUNING.warden.hurtbox / 2,
+    slideTicks: 0,
+    slideAxis: 0,
+    slideSign: handedness < 0 ? -1 : 1
+  };
+}
+
+function wardenHurtBox(warden) {
+  return { x: warden.x, y: warden.y, w: TUNING.warden.hurtbox, h: TUNING.warden.hurtbox };
+}
+
+// bias = min(pursuitBiasCap, pursuitBiasRate * elapsedSec)   [section 4.3]
+function wardenPursuitBias(elapsedSec) {
+  return Math.min(TUNING.warden.pursuitBiasCap, TUNING.warden.pursuitBiasRate * elapsedSec);
+}
+
+function updateWarden(warden, player, mask, elapsedSec, speedMul, rng) {
+  warden.prevX = warden.x;
+  warden.prevY = warden.y;
+
+  const size = TUNING.warden.hurtbox;
+
+  // warden.speedMul already carries the layout's warden multiplier from
+  // floorDescriptorFor; speedMul is the floor speed. Do not re-apply
+  // TUNING.warden.speedMul here or it compounds.
+  const speed = warden.speedMul * speedMul;
+
+  // Each tick, with probability bias, step toward PIP instead of the waypoint.
+  const chase = rng.nextFloat() < wardenPursuitBias(elapsedSec);
+
+  let targetX;
+  let targetY;
+  if (chase) {
+    targetX = player.x + TUNING.player.hitboxFloor / 2;
+    targetY = player.y + TUNING.player.hitboxFloor / 2;
+  } else {
+    const wp = warden.waypoints[warden.routeIdx];
+    targetX = tileCenterPx(wp[0]);
+    targetY = tileCenterPx(wp[1]);
+  }
+
+  const cx = warden.x + size / 2;
+  const cy = warden.y + size / 2;
+  const ddx = targetX - cx;
+  const ddy = targetY - cy;
+
+  if (!chase && Math.abs(ddx) < speed && Math.abs(ddy) < speed) {
+    warden.routeIdx = (warden.routeIdx + 1) % warden.waypoints.length;
+    return;
+  }
+
+  // Greedy axis stepping, no pathfinding. This is what makes a WARDEN snag on
+  // a barrier corner - the intended behaviour per section 4.3.
+  const zero = GEOM.zeroStepEpsilonPx;
+  const stepX = Math.abs(ddx) < zero ? 0 : Math.sign(ddx) * Math.min(speed, Math.abs(ddx));
+  const stepY = Math.abs(ddy) < zero ? 0 : Math.sign(ddy) * Math.min(speed, Math.abs(ddy));
+
+  // DOMINANT AXIS FIRST. moveAxisSeparated always resolves X before Y, which is
+  // correct for PIP but wrong for a chaser: a WARDEN one tile north-west of a
+  // barrier has a large southward pull and a small eastward one, and X-first
+  // spends the tick on the small eastward step straight back into the trap
+  // before the southward escape is ever attempted. Measured: warden 0 logged
+  // 29523 ticks on a single tile. Resolving the axis it most needs first is
+  // still greedy and still has no pathfinding - it just stops the tie-break
+  // from actively working against it.
+  const yFirst = Math.abs(ddy) > Math.abs(ddx);
+  let greedy;
+  if (yFirst) {
+    greedy = moveAxisSeparated(warden.x, warden.y, size, size, 0, stepY, mask, null);
+    greedy = moveAxisSeparated(greedy.x, greedy.y, size, size, stepX, 0, mask, null);
+  } else {
+    greedy = moveAxisSeparated(warden.x, warden.y, size, size, stepX, 0, mask, null);
+    greedy = moveAxisSeparated(greedy.x, greedy.y, size, size, 0, stepY, mask, null);
+  }
+  // Would the DOMINANT axis alone move? This, not "did anything move", is what
+  // ends a slide.
+  //
+  // Measured: aborting on any greedy movement makes the slide useless. A WARDEN
+  // pinned north-west of a barrier still has a small viable eastward step, so
+  // one tick of sliding is immediately undone by greed dragging it back east -
+  // it never travels the ~8 px needed to clear the barrier column. Resuming
+  // only when the blocked axis opens up gives the slide room to work, while
+  // still snapping back to the chase the instant the obstacle is cleared.
+  const dominantOnly = yFirst
+    ? moveAxisSeparated(warden.x, warden.y, size, size, 0, stepY, mask, null)
+    : moveAxisSeparated(warden.x, warden.y, size, size, stepX, 0, mask, null);
+  const dominantMoves = dominantOnly.x !== warden.x || dominantOnly.y !== warden.y;
+
+  // COMMITTED SLIDE (section 4.3.1). Runs only while greed is genuinely stuck.
+  //
+  // Aborting the slide the moment greed becomes viable again is load-bearing.
+  // A fixed-duration slide that ignores the target throughout was measured and
+  // fails: in a 2-tile corridor the WARDEN slides one tile, hits the far wall,
+  // reverses, and bounces inside the corridor for the whole slide instead of
+  // resuming its approach the instant it clears the obstacle.
+  if (warden.slideTicks > 0 && !dominantMoves) {
+    warden.slideTicks--;
+    const slideSpeed = warden.speedMul * speedMul;
+    const sx = warden.slideAxis === 0 ? warden.slideSign * slideSpeed : 0;
+    const sy = warden.slideAxis === 1 ? warden.slideSign * slideSpeed : 0;
+    const slid = moveAxisSeparated(warden.x, warden.y, size, size, sx, sy, mask, null);
+    if (slid.x === warden.x && slid.y === warden.y) {
+      warden.slideSign = -warden.slideSign;   // walled that way too
+    }
+    warden.x = slid.x;
+    warden.y = slid.y;
+    resetWedgeWindow(warden);
+    return;
+  }
+
+  warden.slideTicks = 0;
+  warden.x = greedy.x;
+  warden.y = greedy.y;
+
+  // WEDGE DETECTION (section 4.3.1).
+  //
+  // Measures the SPAN of motion over a window - the bounding box the WARDEN
+  // stayed inside - not net displacement and not "was this tick blocked".
+  // Both simpler metrics were measured and both fail:
+  //   - "blocked this tick" never fires, because a WARDEN pinned on a barrier
+  //     still succeeds on one axis most ticks.
+  //   - net displacement never fires against an OSCILLATION: bouncing between
+  //     two adjacent tiles is 8 px of travel, so the endpoints of a window
+  //     routinely sit further apart than any sane threshold.
+  // Warden 1 logged 30883 visits to a single tile over 600 s while passing
+  // both checks. A span check catches standstill and oscillation alike, and
+  // normal patrol covers ~38 px per window so it never false-positives.
+  warden.minX = Math.min(warden.minX, warden.x);
+  warden.maxX = Math.max(warden.maxX, warden.x);
+  warden.minY = Math.min(warden.minY, warden.y);
+  warden.maxY = Math.max(warden.maxY, warden.y);
+  warden.checkTicks++;
+
+  if (warden.checkTicks >= UNSTICK.afterTicks) {
+    const span = Math.max(warden.maxX - warden.minX, warden.maxY - warden.minY);
+    if (span < UNSTICK.minSpanPx) {
+      // Slide perpendicular to whichever axis it most wanted to travel.
+      warden.slideAxis = Math.abs(ddx) > Math.abs(ddy) ? 1 : 0;
+      warden.slideTicks = UNSTICK.slideTicks;
+    }
+    resetWedgeWindow(warden);
+  }
+}
+
+function resetWedgeWindow(warden) {
+  warden.checkTicks = 0;
+  warden.minX = warden.x;
+  warden.maxX = warden.x;
+  warden.minY = warden.y;
+  warden.maxY = warden.y;
+}
+
+// Section 3.1: nothing kills a WARDEN. Contact kills PIP.
+function wardenTouchesPlayer(warden, player, inRoom) {
+  const p = playerHurtBox(player, inRoom);
+  const w = wardenHurtBox(warden);
+  return aabbOverlap(p.x, p.y, p.w, p.h, w.x, w.y, w.w, w.h);
+}
+
+// ---- game/floor.js ----
+// VAULT RAIDER - floor view. SPEC v0.7 sections 2, 3.2, 3.4, 4.3.
+//
+// Floor view is EVASION. Room view (M3) is combat under a clock.
+//
+// No DOM access. Safe to import from tests/.
+
+
+function createFloorRuntime(floorIndex, rng) {
+  const descriptor = floorDescriptorFor(floorIndex, TUNING);
+  const layout = descriptor.layout;
+
+  const wardens = [];
+  for (let i = 0; i < descriptor.wardenCount; i++) {
+    // More WARDENs than routes on deep floors: reuse routes, offset the start
+    // waypoint so they do not stack on one another.
+    const route = layout.wardenRoutes[i % layout.wardenRoutes.length];
+    // Alternating handedness so two WARDENs wedged on the same barrier scrape
+    // around it opposite ways rather than trailing each other.
+    wardens.push(createWarden({
+      waypoints: route.waypoints,
+      startIdx: route.startIdx + Math.floor(i / layout.wardenRoutes.length)
+    }, descriptor.wardenSpeedMul, i % 2 === 0 ? 1 : -1));
+  }
+
+  return {
+    descriptor,
+    layout,
+    mask: layout.mask,
+    player: createPlayer(layout.spawn.tx, layout.spawn.ty),
+    arrow: createArrowState(),
+    wardens,
+    // Per-FLOOR intrusion clock (section 3.4). Set ONLY here, at floor start.
+    elapsedTicks: 0,
+    // Room seal state. Populated at M4; the shape exists now so death handling
+    // at M5 has something to preserve.
+    looted: {},
+    rng
+  };
+}
+
+// SPEC 3.4 - THE central scoring tension.
+//
+// Called from updateGame BEFORE phase dispatch, on EVERY phase: floor view,
+// room view, zoom transitions, and death. There is deliberately no condition
+// on this function and no caller may add one. It resets only when a new floor
+// starts, which is createFloorRuntime and nowhere else.
+function tickFloorTimer(floor) {
+  floor.elapsedTicks++;
+}
+
+function floorElapsedSec(floor) {
+  return floor.elapsedTicks * TUNING.dt;
+}
+
+function updateFloor(floor, input) {
+  const speedMul = floor.descriptor.speedMul;
+
+  // Corpses block PIP only (section 3.5) and do not exist until M3, so the
+  // blocked-tile set is null here. WARDENs are never passed one - they are
+  // unblockable by corpses by definition (TUNING.corpse.blocksWarden).
+  updatePlayerFloor(floor.player, input, floor.mask, speedMul, null);
+
+  // Section 3.2: hall firing is enabled and useless. The arrow is real.
+  if (input.fire && TUNING.flags.HALL_FIRE_ENABLED) {
+    requestFire(floor.arrow);
+  }
+  updateArrow(floor.arrow, floor.player, floor.mask);
+
+  const elapsed = floorElapsedSec(floor);
+  for (const warden of floor.wardens) {
+    updateWarden(warden, floor.player, floor.mask, elapsed, speedMul, floor.rng);
+  }
+
+  // Contact kills unless PIP is in respawn invulnerability.
+  if (floor.player.invulnTicks > 0) {
+    floor.player.invulnTicks--;
+    return { death: false };
+  }
+  for (const warden of floor.wardens) {
+    if (wardenTouchesPlayer(warden, floor.player, false)) return { death: true };
+  }
+  return { death: false };
+}
+
+function respawnPlayerOnFloor(floor) {
+  const spawn = floor.layout.spawn;
+  const fresh = createPlayer(spawn.tx, spawn.ty);
+  floor.player.x = fresh.x;
+  floor.player.y = fresh.y;
+  floor.player.prevX = fresh.x;
+  floor.player.prevY = fresh.y;
+  floor.player.facing = fresh.facing;
+  floor.player.invulnTicks = Math.round(TUNING.player.respawnInvulnSec / TUNING.dt);
+  // Arrow does not survive a death.
+  floor.arrow.alive = false;
+  floor.arrow.pending = false;
+}
+
+function isStairsUnlocked(floor) {
+  const rooms = floor.layout.rooms;
+  for (const room of rooms) if (!floor.looted[room.id]) return false;
+  return true;
+}
+
+function floorLayoutCount() {
+  return FLOOR_LAYOUTS.length;
+}
+
+// ---- game/state.js ----
+// VAULT RAIDER - root state and phase machine. SPEC v0.7 sections 8, 4.1, 12.1.1.
+//
+// updateGame is THE single update entry point. Its shape carries two invariants
+// that CLAUDE.md lists as the mechanics that keep getting broken:
+//
+//   1. tickFloorTimer runs BEFORE phase dispatch, unconditionally, on every
+//      phase. There is no code path that skips, pauses, or resets it.
+//   2. applyPlayerDeath is one function in one file, so the corpse clear,
+//      unlooted-room reset, and "do not touch the timer" rule are auditable as
+//      a single thing.
+//
+// No DOM access. Safe to import from tests/.
+
+
+function createGameState(seed, floorIndex) {
+  const rng = createRng(seed);
+  const state = {
+    seed,
+    rng,
+    tick: 0,
+    phase: GAME_PHASES.FLOOR_VIEW,
+    phaseTicks: 0,
+    score: 0,
+    floorIndex: floorIndex || 0,
+    floor: null,
+    deathFreezeTicks: 0,
+    gameOver: false
+  };
+  startFloor(state, state.floorIndex);
+  return state;
+}
+
+// THE ONLY PLACE THE FLOOR TIMER RESETS. Not on room exit, not on death,
+// not during a zoom transition (section 3.4).
+function startFloor(state, floorIndex) {
+  state.floorIndex = floorIndex;
+  state.floor = createFloorRuntime(floorIndex, state.rng);
+  transitionPhase(state, GAME_PHASES.FLOOR_VIEW);
+}
+
+function transitionPhase(state, phase) {
+  state.phase = phase;
+  state.phaseTicks = 0;
+}
+
+function updateGame(state, input) {
+  state.tick++;
+  state.phaseTicks++;
+
+  // 1. The per-FLOOR intrusion clock. UNCONDITIONAL. Every phase, always.
+  //    Do not wrap this in a condition. Do not move it below the dispatch.
+  tickFloorTimer(state.floor);
+
+  // 2. Phase dispatch.
+  switch (state.phase) {
+    case GAME_PHASES.FLOOR_VIEW: {
+      const result = updateFloor(state.floor, input);
+      if (result.death) applyPlayerDeath(state);
+      break;
+    }
+    case GAME_PHASES.PLAYER_DEATH: {
+      state.deathFreezeTicks--;
+      if (state.deathFreezeTicks <= 0) {
+        if (state.floor.player.lives > 0) {
+          respawnPlayerOnFloor(state.floor);
+          transitionPhase(state, GAME_PHASES.FLOOR_VIEW);
+        } else {
+          state.gameOver = true;
+          transitionPhase(state, GAME_PHASES.GAME_OVER);
+        }
+      }
+      break;
+    }
+    case GAME_PHASES.GAME_OVER:
+    default:
+      break;
+  }
+}
+
+// SPEC 4.1 death handling. M2 implements the parts that exist.
+//
+// THE TIMER IS NOT TOUCHED HERE. Resetting or reducing it is a suicide-farm
+// exploit (TUNING.flags.DEATH_RESETS_FLOOR_TIMER must stay false).
+//
+// M5 adds: clear all corpses on the floor, reset unlooted rooms to entry spawn
+// state, keep looted rooms looted. Those hooks do not exist yet because
+// corpses and rooms do not. The marker below is where they go.
+function applyPlayerDeath(state) {
+  const player = state.floor.player;
+  player.lives--;
+
+  // --- M5 goes here: clear corpses, reset unlooted rooms, keep looted ---
+  // Deliberately NOT here, ever: any write to state.floor.elapsedTicks.
+
+  state.deathFreezeTicks = Math.round(TUNING.player.deathFreezeSec / TUNING.dt);
+  transitionPhase(state, GAME_PHASES.PLAYER_DEATH);
+}
+
+// SPEC 12.1.1 - the determinism hash. tests/determinism.mjs imports THIS
+// rather than reimplementing it, so test and implementation cannot drift.
+//
+// Included: anything whose omission could hide a divergence that changes what
+// happens in the game. Excluded: render interpolation, audio, cosmetics.
+function hashGameState(state) {
+  const nums = [];
+  nums.push(state.rng.getState(), state.tick, phaseCode(state.phase));
+  // deathFreezeTicks gates WHEN respawn fires. Harmless to omit today because
+  // respawn writes fixed values, but M5 makes the result of respawn depend on
+  // floor state, so include it now rather than remember to later.
+  nums.push(state.deathFreezeTicks);
+
+  const floor = state.floor;
+  nums.push(floor.elapsedTicks, floor.descriptor.floorIndex);
+
+  const p = floor.player;
+  nums.push(p.x, p.y, p.facing, p.lives, p.invulnTicks);
+
+  const a = floor.arrow;
+  nums.push(a.alive ? 1 : 0, a.x, a.y, a.dir, a.windup, a.pending ? 1 : 0);
+
+  // Corner-clipping state changes where a WARDEN goes next, so omitting it
+  // could hide a divergence (section 12.1.1 inclusion test).
+  for (const w of floor.wardens) {
+    nums.push(w.x, w.y, w.routeIdx,
+      w.checkTicks, w.minX, w.maxX, w.minY, w.maxY,
+      w.slideTicks, w.slideAxis, w.slideSign);
+  }
+
+  // Room looted flags, in a stable order.
+  for (const room of floor.layout.rooms) nums.push(floor.looted[room.id] ? 1 : 0);
+
+  nums.push(state.score);
+  // NOT included: prevX/prevY (render interpolation only), phaseTicks where it
+  // is cosmetic, and anything derived rather than stored.
+  return hashValues(0, nums);
+}
+
+const PHASE_ORDER = Object.keys(GAME_PHASES);
+
+function phaseCode(phase) {
+  const i = PHASE_ORDER.indexOf(phase);
+  return i < 0 ? PHASE_ORDER.length : i;
+}
+
+function gameElapsedSec(state) {
+  return floorElapsedSec(state.floor);
+}
+
 // ---- core/gfx.js ----
 // VAULT RAIDER - canvas primitives. SPEC v0.6 sections 1, 17.6.
 //
@@ -794,103 +1637,147 @@ function gfxEndFrame(gfx) {
   gfx.ctx.setTransform(1, 0, 0, 1, 0, 0);
 }
 
-// ---- main.js ----
-// VAULT RAIDER - boot and wiring. SPEC v0.6 section 14 (M1).
+// ---- game/render.js ----
+// VAULT RAIDER - scene composition. SPEC v0.7 sections 2, 13, 17.6.
 //
-// Wiring only. No game logic lives here.
+// Owns WHAT the scene looks like. core/gfx.js owns HOW pixels get to the
+// canvas (init, scaling, viewport, blit). Neither is imported by tests/.
 //
-// M1 SCAFFOLDING NOTICE: mainDebugState and mainRenderDebug below are the
-// milestone's stated validation artifact - the "debug rect at exactly 60 Hz"
-// from section 14. They are NOT the game. M2 replaces them with game/state.js
-// and game/render.js. The debug entity carries a persistent `facing` field
-// specifically to demonstrate section 17.1.1: facing survives key release.
+// Sprites arrive at M3; M2 renders with primitives.
 
 
-const MAIN_BG_COLOR = '#101018';
-const MAIN_FIELD_COLOR = '#1c1c2c';
-const MAIN_PIP_COLOR = '#f8f0c0';
-const MAIN_FACING_COLOR = '#e04030';
-const MAIN_TEXT_COLOR = '#8090b0';
-const MAIN_FIRE_FLASH_TICKS = 8;
-const MAIN_DEBUG_SIZE = 6;
-const MAIN_FACING_LEN = 6;
-const MAIN_TEXT_SIZE = 6;
-const MAIN_FPS_WINDOW = 30;
+// Palette. Per-floor palette swapping arrives with the sprite atlas at M3.
+const PAL_VOID = '#05050a';
+const PAL_WALL = '#2a2a44';
+const PAL_WALL_TOP = '#3c3c60';
+const PAL_FLOOR = '#12121e';
+const PAL_ROOM = '#1e1a2e';
+const PAL_DOOR = '#c8a020';
+const PAL_STAIRS = '#40c880';
+const PAL_PIP = '#f8f0c0';
+const PAL_FACING = '#e04030';
+const PAL_ARROW = '#f8f0c0';
+const PAL_WARDEN = '#d02040';
+const PAL_WARDEN_EYE = '#f8f0c0';
+const PAL_HUD = '#8090b0';
 
-function createMainDebugState() {
-  return {
-    x: TUNING.logicalW / 2,
-    y: TUNING.logicalH / 2,
-    prevX: TUNING.logicalW / 2,
-    prevY: TUNING.logicalH / 2,
-    // PERSISTENT entity facing (section 17.1.1). Starts East. Updated only when
-    // facingLatch !== -1; never cleared on neutral input.
-    facing: 2,
-    fireFlash: 0,
-    ticks: 0,
-    lastSample: { dir: DIR_NEUTRAL, fire: false, facingLatch: DIR_NEUTRAL }
-  };
-}
+const HUD_TEXT_PX = 6;
+const HUD_MARGIN = 3;
+const FACING_PIP_PX = 2;
+const FACING_PIP_DIST = 5;
 
-function updateMainDebug(state, input) {
-  state.prevX = state.x;
-  state.prevY = state.y;
+// DERIVED from the a11y flash cap, never hardcoded (section 11: nothing in the
+// game may flash above maxFlashHz). A literal 4 here was a 7.5 Hz blink - over
+// the cap, and the cap already existed in tuning.js unconsulted. One full
+// on/off cycle spans two of these, hence the 2.
+const INVULN_BLINK_TICKS = Math.ceil(1 / (TUNING.a11y.maxFlashHz * 2 * TUNING.dt));
 
-  // facingLatch is an EVENT. Read it, do not store it. Entity facing persists.
-  if (input.facingLatch !== DIR_NEUTRAL) state.facing = input.facingLatch;
+function lerp(a, b, t) { return a + (b - a) * t; }
 
-  // dir is MOVEMENT intent, and is independent of facing.
-  if (input.dir !== DIR_NEUTRAL) {
-    const d = DIRS[input.dir];
-    const speed = TUNING.player.speedFloor * TUNING.floorSpeedMul[0];
-    state.x += d.dx * speed;
-    state.y += d.dy * speed;
-  }
-
-  const half = MAIN_DEBUG_SIZE / 2;
-  state.x = Math.max(half, Math.min(TUNING.logicalW - half, state.x));
-  state.y = Math.max(half, Math.min(TUNING.logicalH - half, state.y));
-
-  if (input.fire) state.fireFlash = MAIN_FIRE_FLASH_TICKS;
-  else if (state.fireFlash > 0) state.fireFlash--;
-
-  state.lastSample = input;
-  state.ticks++;
-}
-
-function mainRenderDebug(gfx, state, alpha, loop, fps) {
-  gfxBeginFrame(gfx, MAIN_BG_COLOR);
-  gfxFillRect(gfx, 0, 0, TUNING.logicalW, TUNING.logicalH, MAIN_FIELD_COLOR);
-
-  // Interpolated render: draw between the last two simulated positions.
-  const x = state.prevX + (state.x - state.prevX) * alpha;
-  const y = state.prevY + (state.y - state.prevY) * alpha;
-  const half = MAIN_DEBUG_SIZE / 2;
-
-  gfxFillRect(gfx, Math.round(x - half), Math.round(y - half),
-    MAIN_DEBUG_SIZE, MAIN_DEBUG_SIZE,
-    state.fireFlash > 0 ? MAIN_FACING_COLOR : MAIN_PIP_COLOR);
-
-  // Facing indicator. Persists with no keys held - that is the point of it.
-  const d = DIRS[state.facing];
-  gfxStrokeRect(gfx,
-    Math.round(x + d.dx * MAIN_FACING_LEN) - 1,
-    Math.round(y + d.dy * MAIN_FACING_LEN) - 1,
-    2, 2, MAIN_FACING_COLOR, 1);
-
-  const s = state.lastSample;
-  const lines = [
-    'M1 DEBUG  tick ' + state.ticks,
-    'fps ' + fps.toFixed(1) + '  substeps ' + loop.lastSteps,
-    'dir ' + s.dir + '  face(evt) ' + s.facingLatch + '  fire ' + (s.fire ? 1 : 0),
-    'entity facing ' + state.facing + ' ' + DIRS[state.facing].name
-  ];
-  for (let i = 0; i < lines.length; i++) {
-    gfxDrawDebugText(gfx, lines[i], 4, 4 + i * (MAIN_TEXT_SIZE + 2), MAIN_TEXT_COLOR, MAIN_TEXT_SIZE);
-  }
-
+function renderFrame(gfx, state, alpha) {
+  gfxBeginFrame(gfx, PAL_VOID);
+  renderFloorView(gfx, state, alpha);
+  renderHud(gfx, state);
   gfxEndFrame(gfx);
 }
+
+function renderFloorView(gfx, state, alpha) {
+  const floor = state.floor;
+  const t = TUNING.tile;
+
+  // Mask. Wall tops get a lighter edge so corridors read as corridors at 1x.
+  for (let ty = 0; ty < floor.mask.length; ty++) {
+    const row = floor.mask[ty];
+    for (let tx = 0; tx < row.length; tx++) {
+      if (row[tx] === '.') {
+        gfxFillRect(gfx, tx * t, ty * t, t, t, PAL_FLOOR);
+      } else {
+        const openAbove = ty > 0 && floor.mask[ty - 1][tx] === '.';
+        gfxFillRect(gfx, tx * t, ty * t, t, t, openAbove ? PAL_WALL_TOP : PAL_WALL);
+      }
+    }
+  }
+
+  // Room blocks and their doors.
+  for (const room of floor.layout.rooms) {
+    const [rx, ry, rw, rh] = room.rect;
+    gfxFillRect(gfx, rx * t, ry * t, rw * t, rh * t, PAL_ROOM);
+    gfxFillRect(gfx, room.door.tx * t, room.door.ty * t, t, t,
+      floor.looted[room.id] ? PAL_WALL : PAL_DOOR);
+  }
+
+  // Stairs.
+  const st = floor.layout.stairs;
+  gfxFillRect(gfx, st.tx * t + 1, st.ty * t + 1, t - 2, t - 2, PAL_STAIRS);
+
+  // Arrow. Real and useless in the hall (section 3.2) - drawn so the player
+  // can see it pass straight through a WARDEN.
+  const arrow = floor.arrow;
+  if (arrow.alive) {
+    gfxFillRect(gfx, Math.round(arrow.x) - 1, Math.round(arrow.y) - 1, 2, 2, PAL_ARROW);
+  }
+
+  // WARDENs.
+  for (const w of floor.wardens) {
+    const wx = Math.round(lerp(w.prevX, w.x, alpha));
+    const wy = Math.round(lerp(w.prevY, w.y, alpha));
+    const s = TUNING.warden.hurtbox;
+    gfxFillRect(gfx, wx, wy, s, s, PAL_WARDEN);
+    // Distinct silhouette, not hue alone (section 11 contrast requirement).
+    gfxFillRect(gfx, wx + 2, wy + 2, 2, 2, PAL_WARDEN_EYE);
+    gfxFillRect(gfx, wx + s - 4, wy + 2, 2, 2, PAL_WARDEN_EYE);
+  }
+
+  // PIP.
+  const p = floor.player;
+  const blinking = p.invulnTicks > 0 &&
+    Math.floor(p.invulnTicks / INVULN_BLINK_TICKS) % 2 === 0;
+  if (state.phase !== GAME_PHASES.GAME_OVER && !blinking) {
+    const px = Math.round(lerp(p.prevX, p.x, alpha));
+    const py = Math.round(lerp(p.prevY, p.y, alpha));
+    const s = TUNING.player.hitboxFloor;
+    gfxFillRect(gfx, px, py, s, s, PAL_PIP);
+    // Facing indicator. Persists with no keys held - that is section 17.1.1
+    // made visible, and the fastest way to spot a regression by eye.
+    const d = DIRS[p.facing];
+    gfxFillRect(gfx,
+      Math.round(px + s / 2 + d.dx * FACING_PIP_DIST - FACING_PIP_PX / 2),
+      Math.round(py + s / 2 + d.dy * FACING_PIP_DIST - FACING_PIP_PX / 2),
+      FACING_PIP_PX, FACING_PIP_PX, PAL_FACING);
+  }
+}
+
+function renderHud(gfx, state) {
+  // Section 17.6: HUD pins to the TOP edge. Never the bottom corners - thumbs
+  // cover them on a phone.
+  const floor = state.floor;
+  const elapsed = floorElapsedSec(floor);
+  const limit = floor.descriptor.floorTimerSec;
+  const left = Math.max(0, limit - elapsed);
+
+  const line = 'FLOOR ' + (floor.descriptor.floorIndex + 1) +
+    '   LIVES ' + floor.player.lives +
+    '   SCORE ' + state.score +
+    '   CLOCK ' + left.toFixed(1);
+  gfxDrawDebugText(gfx, line, HUD_MARGIN, HUD_MARGIN, PAL_HUD, HUD_TEXT_PX);
+
+  if (state.phase === GAME_PHASES.GAME_OVER) {
+    gfxDrawDebugText(gfx, 'GAME OVER',
+      TUNING.logicalW / 2 - 24, TUNING.logicalH / 2 - 4, PAL_PIP, HUD_TEXT_PX * 2);
+  }
+}
+
+// ---- main.js ----
+// VAULT RAIDER - boot and wiring. SPEC v0.7 section 14.
+//
+// Wiring only. No game logic lives here, and no constants either - the M1
+// debug scaffolding and its module-local palette are gone as of M2.
+
+
+// Fixed boot seed. Deterministic across reloads, which is what makes a
+// recorded input stream replayable (section 12.1.2). A per-run seed arrives
+// with the high-score table at M9.
+const BOOT_SEED = 0x5641554c;
 
 function bootVaultRaider(doc, win) {
   const canvas = doc.getElementById('vr-canvas');
@@ -902,11 +1789,7 @@ function bootVaultRaider(doc, win) {
   // Every session records its input stream. Determinism is a v1 requirement
   // (section 15), so the recorder runs from M1 rather than being retrofitted.
   const recorder = createInputRecorder();
-  const state = createMainDebugState();
-
-  let fps = 0;
-  let fpsFrames = 0;
-  let fpsLast = 0;
+  const state = createGameState(BOOT_SEED, 0);
 
   function fitCanvas() {
     resizeGfx(gfx, win.innerWidth, win.innerHeight, win.devicePixelRatio);
@@ -915,32 +1798,25 @@ function bootVaultRaider(doc, win) {
   win.addEventListener('resize', fitCanvas);
 
   const loop = createLoop({
+    // performance.now() is milliseconds; the loop works in seconds. This is a
+    // unit conversion, not a tuning value, so it stays inline.
     now: () => win.performance.now() / 1000,
     schedule: (cb) => win.requestAnimationFrame(cb),
     update: () => {
       // sampleInput is called EXACTLY once per tick. It advances edge detection.
       const input = sampleInput(hub);
       recordInputFrame(recorder, input);
-      updateMainDebug(state, input);
+      updateGame(state, input);
     },
-    render: (alpha) => {
-      fpsFrames++;
-      const t = win.performance.now();
-      if (t - fpsLast >= MAIN_FPS_WINDOW * 16) {
-        fps = (fpsFrames * 1000) / (t - fpsLast);
-        fpsFrames = 0;
-        fpsLast = t;
-      }
-      mainRenderDebug(gfx, state, alpha, loop, fps);
-    }
+    render: (alpha) => renderFrame(gfx, state, alpha)
   });
 
   loop.start();
   return { loop, hub, gfx, state, recorder };
 }
 
-// Guarded so that importing main.js under Node (build checks, tooling) does not
-// try to touch the DOM.
+// Guarded so importing main.js under Node (build checks, tooling) does not
+// touch the DOM.
 if (typeof document !== 'undefined' && typeof window !== 'undefined') {
   bootVaultRaider(document, window);
 }

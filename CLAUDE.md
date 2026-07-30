@@ -41,14 +41,17 @@ When this file and SPEC.md conflict, SPEC.md wins â€” report the conflict.
 ```powershell
 python -m http.server 8000     # dev server, run from src\
 python build.py                # emit dist\index.html
-node tests\winnability.mjs
-node tests\determinism.mjs
-node tests\timer.mjs
-node tests\floors.mjs
-node tests\input.mjs
+node tests\winnability.mjs     # M3
+node tests\determinism.mjs     # M2 - also greps src/ for the banned PRNG
+node tests\timer.mjs           # M2
+node tests\floors.mjs          # M2
+node tests\loop.mjs            # M1
+node tests\input.mjs           # M1, touch assertions added at M11
 ```
 
-All four tests must pass before any commit that touches `src/`.
+**All SIX tests must pass** before any commit that touches `src/`. The comment
+against each is the milestone it landed at; `winnability.mjs` is the only one
+not yet written.
 
 ## Delegation policy
 
@@ -108,6 +111,21 @@ This is not ceremony. The M1 input-arbitration test passed against the reverted
 fix — registration order was deciding the assertion, not recency — and would
 have been a false negative trusted for eleven more milestones. A test that
 cannot fail is a comment with a runtime cost.
+
+### Instrument before hypothesising
+
+When behaviour is wrong and the cause is not obvious, **write the probe that
+shows what is actually happening before proposing a fix.**
+
+At M2 a stationary PIP was unkillable. I proposed two plausible causes and
+implemented both; neither helped, and the second made it worse. A tick-by-tick
+probe printing position, stall counters and slide state found the real cause on
+the first run — the greedy chaser's *small* off-axis pull was consuming each
+tick before the *large* escape axis was ever tried.
+
+Two failed hypotheses cost more than the probe would have. This pairs with the
+mutation-testing rule above: both are about refusing to trust a plausible story
+over evidence.
 
 ### Do not assert completeness — state a checkable invariant
 

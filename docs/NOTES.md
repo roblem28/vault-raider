@@ -179,6 +179,146 @@ Deleted: `player.hitbox: 8`.
 
 ---
 
+## M2 — floor view (2026-07-30)
+
+### M2-A1 — INVENTED CONSTANTS, need approval: the WARDEN unstick trio
+
+`warden.unstickAfterTicks: 45`, `unstickMinSpanPx: 12`, `unstickSlideTicks: 60`.
+Not transcribed from SPEC — flagged separately here rather than buried in the
+transcribed table, same as `accumulatorEpsilonSec` (A7).
+
+**The defect they fix was real and severe.** A purely greedy chaser cannot step
+*away* from PIP, so any barrier between them grants **permanent immunity**
+rather than cover. Measured on floor 1: PIP stood at spawn **untouched for 600
+seconds** while one WARDEN logged 29523 ticks on a single tile. Floor view stops
+being evasion when standing still is the winning move.
+
+SPEC §4.5 already sanctions the fix without improving pathing — walls block
+WARDENs *badly*, "slow corner clipping only". §4.3.1 now states what that means.
+
+**Four attempts, three of which failed. Recorded because the failures are the
+interesting part and a future edit will re-propose them:**
+
+| Attempt | Result |
+|---|---|
+| Slide when the tick is blocked | **Failed.** A WARDEN pinned on a barrier still succeeds on one axis most ticks, so it never looks blocked. |
+| Re-roll slide handedness per stall | **Failed.** Scraping a wall lets greed partially succeed, clearing the stall and triggering a fresh roll — it oscillates in place. 5/8 seeds never caught. |
+| Detect wedging by net displacement | **Failed.** Oscillating between two adjacent tiles is 8 px of travel; window endpoints sit far enough apart to pass. Replaced with the **span** of motion, which catches standstill and oscillation alike. |
+| Abort the slide when any greedy step is viable | **Failed, 8/40 seeds.** The small off-axis step that caused the trap is still viable, so one tick of sliding is undone immediately. Now aborts only when the **dominant** axis opens. |
+
+Also required: **resolve the dominant axis first** when chasing.
+`moveAxisSeparated` resolves X before Y, which is right for PIP and actively
+harmful for a chaser — the small eastward pull was consuming the tick before the
+large southward escape was ever tried.
+
+Result: **0/40 seeds** leave PIP permanently safe. Median catch 33 s, p90 44 s,
+worst 48 s. Guarded by `tests/floors.mjs`, verified failing pre-fix on 4 seeds.
+
+This is still not pathfinding and must never become pathfinding (§4.3). The
+WARDEN picks a direction blindly, often commits to the wrong way round, and
+takes a long time. Barriers give **temporary cover, not immunity**.
+
+### M2-D1 — floor-1 layout is authored, not transcribed
+
+SPEC §7.1's example floor is a **schema illustration and is not internally
+consistent**: door `(6,19)` sits in the interior of room rect `[5,16,6,5]` rather
+than on its perimeter, and the room rects overlap the warden routes implied by
+its own waypoint list. The mask itself was never specified — §7.1 carries a
+`"…30 rows of 40 chars…"` placeholder.
+
+So floor 1's geometry is authored, preserving §7.1's *intent* (four corner
+rooms, centre stairs, a perimeter patrol plus a central vertical one) and its
+schema exactly. Room ids and the two warden routes are kept verbatim; door and
+rect coordinates are chosen to be consistent. Validated by `tests/floors.mjs`
+rather than by inspection.
+
+Barriers are baked into the mask as wall rather than carried in §7.1's separate
+`barriers` array. Floor-view barriers are static walls (§4.5 `WALL`); the array
+is retained in the schema for M3's `SLIDING_BARRIER` room hazards, which are a
+different thing that happens to share a name.
+
+### M2-D2 — SPEC §14 says "1 WARDEN", §4.3 says 2. Built 2.
+
+§14's M2 row reads "1 WARDEN on a route". §4.3's `countByLayout[0]` is **2**, and
+floor 1 is a real floor rather than a test fixture. Built 2, which is what the
+shipped floor needs; §14's figure reads as milestone shorthand rather than
+content. Flagging rather than silently choosing.
+
+### M2-D3 — unit conversion is not a tuning constant
+
+`main.js` converts `performance.now()` milliseconds to seconds with a literal
+`/ 1000`. CLAUDE.md bans magic numbers in logic files; a unit conversion is not
+one, and putting it in `tuning.js` would oblige §6 to carry it under the §6
+invariant. Left inline with a comment. Raise it if you disagree.
+
+### M2-A2 — two more invented constants: `geom.boxEdgeEpsilonPx`, `zeroStepEpsilonPx`
+
+`1e-9` and `1e-6`. Found by `fidelity-auditor`, which correctly noted these are
+the *opposite* case from `SCHEDULER.accumulatorEpsilonSec`: that one is safe
+because it is unreachable from `update()`, while these two sit **inside**
+simulation code. Promoted from literals into `TUNING.geom` and SPEC §6 so the
+precedent is "named and disclosed", not "literal in whichever collision file
+needed it".
+
+- `boxEdgeEpsilonPx` makes tile intervals half-open. Without it a 6 px box whose
+  edge lands exactly on x=8 claims both tile 1 and tile 2.
+- `zeroStepEpsilonPx` is the "close enough to zero to not be a step" threshold
+  in WARDEN chase stepping.
+
+### M2-F1 — a11y flash cap existed and was not being consulted
+
+`render.js` blinked respawn invulnerability every 4 ticks — a **7.5 Hz** flash,
+against `TUNING.a11y.maxFlashHz: 3` which has existed since v0.5. Nothing was
+wrong with the constant; nothing read it.
+
+Now **derived**: `ceil(1 / (maxFlashHz * 2 * dt))` = 10 ticks, giving exactly
+3 Hz. Deriving rather than hardcoding a correct value means the cap cannot drift
+out of sync with the thing it caps. Caught at M2 rather than M9, which is where
+`reducedFlash` is scheduled and where it would have shipped.
+
+### M2-F2 — duplicate fire gate removed before it could become three
+
+`entities.js` exported `requestFire` and `floor.js` kept a private
+`requestFloorFire` doing the same thing; the exported one was dead code. Both
+enforced §3.8 identically, so nothing was broken — but M3 adds room-view firing,
+and three independently-maintained copies of "exactly one arrow alive, ever" is
+how that invariant stops being true. Consolidated to the single exported
+`requestFire`.
+
+### M2-F3 — the doorway test I first shipped covered one dimension of three
+
+I reported "9/9 sub-pixel offsets" as doorway coverage. The brief was four
+approach directions at 60 **and** 30 Hz — three dimensions, and I had varied
+one. Extended to the full matrix:
+
+- **40 one-tile gap tiles**, not the 12 room-door notches I would have hand-
+  listed. The barriers create 1-tile lanes too, and the detector found them.
+- **1368 combinations**: every gap × every cardinal approach whose entry tile is
+  floor (84 more are walled and reported N/A rather than silently skipped) × 9
+  sub-pixel alignments × {60 Hz, 30 Hz}.
+- Driven through `advanceAccumulator`, so 30 Hz exercises the real 2-substep
+  path rather than an assumption about it.
+
+All 1368 pass. Mutation-verified: raising the collision box to 8 px fails
+**912 of 1368**, which is SPEC §4.1's "zero tolerance in a 1-tile gap" claim
+turning out to be literally true.
+
+**A second mutation found something worth recording: disabling doorway
+snap-assist entirely changes nothing.** All 1368 still pass. A 4×4 box in an
+8 px gap has 2 px of slack per side, so floor view never needs the assist —
+which means **snap-assist is currently unexercised by any test**. It exists for
+the 6×6 *room* hitbox (1 px per side), and that geometry does not exist until
+M3. Flagged as an M3 test requirement rather than covered by a floor-mask proxy,
+which would have given false confidence.
+
+### M2 scaffolding removed
+
+M1's `createMainDebugState` / `updateMainDebug` / `mainRenderDebug` and their
+module-local palette constants are **deleted** from `main.js`, closing the F3
+AT RISK item from M1. `main.js` is now wiring only.
+
+---
+
 ## Withdrawn reviewer findings
 
 Tracked per CLAUDE.md: if the withdrawal rate stays high, the agent file needs
@@ -214,6 +354,31 @@ Per CLAUDE.md's post-subagent `git status --porcelain` check.
 Treasure value deliberately does not (A1). Whether the floor-clear bonus should
 grow on floors 4–6 and 7–9 is a balance question, not a spec question. Deferred
 until after the feel gate (§12.3), decided by playtest.
+
+**B3 — WARDEN unstick timing. Decide by playing. BASELINE RECORDED.**
+
+`UNSTICK.afterTicks: 45`, `minSpanPx: 12`, `slideTicks: 60` — all invented, none
+specified. They quantify something SPEC only ever stated qualitatively: §4.3
+calls barriers "PIP's only defensive tool" without saying for how long.
+
+Measured on floor 1, PIP stationary at spawn, 40 seeds:
+
+| | |
+|---|---|
+| Seeds where PIP is permanently safe | **0 / 40** (was 6/40, and 600 s+ before the fix) |
+| Median time for a WARDEN to reach PIP | **33.2 s** |
+| p90 | **44.3 s** |
+| Worst | **47.6 s** |
+| Floor-1 timer for comparison | **45 s** |
+
+So on some seeds a barrier shelters PIP for the entire floor timer. **Not a
+defect** — camping the hall gains nothing and burns the time bonus, so it is
+self-punishing — but it is a balance fact that was invented rather than
+specified, and it should be felt rather than reasoned about.
+
+Turn `afterTicks` down to make barriers less protective; `slideTicks` up to make
+a wedged WARDEN commit longer to escaping. Re-run the sweep after any change and
+compare against the table above.
 
 **B2 — `CORPSE_SHOT_MODE`.**
 SPEC §3.6 flags this as CONTESTED between two sources. Both modes implemented,
