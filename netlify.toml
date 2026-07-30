@@ -1,0 +1,12 @@
+# build.py emits dist/index.html, so the site root serves the game directly.
+# No redirect needed here. The public URL is boblemieux.ai/games/vault-raider,
+# proxied from the portfolio site - see SPEC.md section 16.
+[build]
+  publish = "dist"
+  command = ""
+
+[[headers]]
+  for = "/*"
+  [headers.values]
+    X-Content-Type-Options = "nosniff"
+    Referrer-Policy = "strict-origin-when-cross-origin"

@@ -1,0 +1,12 @@
+.claude/settings.local.json
+.claude/agent-memory-local/
+tests/scratch/
+
+# Scratch archives and superseded spec copies. SPEC.md is the only spec in the repo.
+*.zip
+vault-raider-spec-v*.md
+
+__pycache__/
+*.pyc
+.DS_Store
+Thumbs.db
