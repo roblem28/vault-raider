@@ -1,6 +1,18 @@
 .claude/settings.local.json
+
+# Agent memory is local scratch, not a project artifact: regenerable, and it
+# holds candid unreviewed assessments of the codebase plus quoted source. The
+# repo is public. Both paths are listed on purpose - the -local variant was the
+# original guess at the path, the other is where memory actually lands.
+.claude/agent-memory/
 .claude/agent-memory-local/
+
+# Subagent scratch. A reviewer with Bash can copy the tree; these keep its
+# working copies out of commits. The real fix is isolation: worktree on any
+# agent that needs to write - see .claude/agents/softlock-hunter.md.
 tests/scratch/
+src_test_dup/
+*_dup/
 
 # Scratch archives and superseded spec copies. SPEC.md is the only spec in the repo.
 *.zip

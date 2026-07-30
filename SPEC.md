@@ -1,7 +1,7 @@
-# VAULT RAIDER — Game Spec v0.6
+# VAULT RAIDER — Game Spec v0.7
 **An arcade dungeon crawler in the tradition of Venture (Exidy 1981 /
 ColecoVision 1982)** — nominative reference, see §0.1
-Date: 2026-07-30 · Owner: Box of Rox LLC · Supersedes v0.5
+Date: 2026-07-30 · Owner: Box of Rox LLC · Supersedes v0.6
 
 Changes from v0.1 are marked **[v0.2]**. Changes from v0.2 are marked **[v0.3]**
 (build output naming, deployment §16). Changes from v0.3 are marked **[v0.4]**
@@ -17,6 +17,12 @@ modules added to the repo layout (§13).
 Changes from v0.5 are marked **[v0.6]** — the IP rule split into two tiers
 (§0.1) after the v0.5 blanket rule proved to fire on every internal design
 document, and the repo confirmed **public**.
+Changes from v0.6 are marked **[v0.7]** — everything M1 found by building
+against the spec rather than reading it: seven constants promoted out of prose
+into §6 (§4.1, §4.3, §4.4, §9), the §6 completeness claim **deleted** and
+replaced with a checkable invariant after being wrong twice, the scheduler
+constant block (§6.1), §17.1.1's tick-by-tick counter-example, and
+`tests/loop.mjs` added to §12.1 as a sixth test file.
 
 ---
 
@@ -313,13 +319,26 @@ Ship names only. Original references in Appendix A.
 
 ## 6. TUNING CONSTANTS
 
-**[v0.5]** This block is now **complete**. v0.4 stated fifteen values only in
-prose (§4.1 snap-assist, §8 zoom, §11 flash caps, §17 touch), which collided with
-the project rule that all constants live in `src/data/tuning.js` and no logic
-file carries a magic number. Every value added below is transcribed verbatim from
-the section named in its comment. Nothing here is a judgment call; where a
-judgment call was required it is flagged in `docs/NOTES.md` instead of being
-buried in this table.
+**[v0.5]** v0.4 stated fifteen values only in prose (§4.1 snap-assist, §8 zoom,
+§11 flash caps, §17 touch), which collided with the project rule that all
+constants live in `src/data/tuning.js` and no logic file carries a magic number.
+Every value added is transcribed verbatim from the section named in its comment.
+Nothing here is a judgment call; where a judgment call was required it is flagged
+in `docs/NOTES.md` instead of being buried in this table.
+
+**[v0.7] This block does NOT claim to be complete, and that wording is
+deliberate.** v0.5 claimed completeness and was wrong twice: the gamepad stick
+deadzone (§9) and then the pursuit-bias cap (§4.3), diagonal-dodge multiplier
+(§4.4), starting lives (§4.1), and floor-clear multiplier terms all survived the
+"completion" pass. Each was found only when a milestone was about to consume it.
+
+The invariant, which is checkable, replaces the claim, which was not:
+
+> **Any numeric value a logic file needs must exist here before that file is
+> written.** A milestone that discovers a prose-only constant folds it into §6
+> first, then writes the code — never the reverse.
+
+A `[v0.7]` comment marks each value promoted out of prose after the fact.
 
 ```js
 export const TUNING = {
@@ -333,15 +352,24 @@ export const TUNING = {
   player: { speedRoom: 1.00, speedFloor: 1.10,
             hitboxFloor: 4, hitboxRoom: 6,          // §4.1 collision box
             hurtboxFloor: 4, hurtboxRoom: 6,        // §4.1 hurt box
+            spriteFloor: 4, spriteRoom: 12,         // [v0.7] §4.1 sprite, was prose-only
             snapAssistWindowPx: 2,                  // §4.1 doorway snap-assist
             snapAssistStepPx: 1,                    // §4.1
+            startingLives: 3,                       // [v0.7] §4.1, was prose-only
             deathFreezeSec: 1.5, respawnInvulnSec: 2.0 },
 
-  monster: { hurtbox: 8 },                          // §4.1, §4.4 - 8x8 centered
+  // [v0.7] diagonalDodgeMul lives here rather than inside dodgeSkill, because
+  // dodgeSkill is a tier map read as dodgeSkill[tier] and must stay pure.
+  monster: { hurtbox: 8,                            // §4.1, §4.4 - 8x8 centered
+             diagonalDodgeMul: 0.5 },               // [v0.7] §4.4, was prose-only
 
   arrow:  { speed: 3.5, maxAlive: 1, windupTicks: 4, dodgeLookahead: 24 },
 
   zoom:   { durationTicks: 24 },                    // §8 - ticks, never ms
+
+  gamepad: { stickDeadzone: 0.35 },                 // [v0.7] §9 - was stated only in
+                                                    // §9's table; §6 claimed to
+                                                    // be complete without it
 
   touch: {                                          // §17.2 - §17.6, device px
     knobDiameterDevicePx: 64,                       // §17.2
@@ -359,6 +387,7 @@ export const TUNING = {
   // Per-FLOOR intrusion clock. Never resets on room exit or on death.
   warden: { floorTimerSec: [45, 38, 32], intrusionWarnSec: 4,
             speedMul: [0.85, 0.95, 1.05], pursuitBiasRate: 0.02,
+            pursuitBiasCap: 0.9,                    // [v0.7] §4.3, was prose-only
             countByLayout: [2, 3, 4],
             hurtbox: 8 },                           // §4.1, §4.3 - no collision box
 
@@ -375,6 +404,10 @@ export const TUNING = {
                    STALKER: 250, BRUTE: 300, BLINKER: 400 },
     treasureByFloor: [400, 600, 800],
     floorClearBase: 1000,
+    // [v0.7] The two terms of the §6 bonus formula, previously inline literals
+    // in the formula block below: mult = base + range * (remain / timer).
+    floorClearMultBase: 1,
+    floorClearMultRange: 4,
     extraLifeEvery: 20000
   },
 
@@ -390,6 +423,37 @@ export const TUNING = {
           maxFlashHz: 3 }                           // §11
 };
 ```
+
+### **[v0.7]** 6.1 Scheduler constants — deliberately NOT in `TUNING`
+
+```js
+export const SCHEDULER = { accumulatorEpsilonSec: 1e-9 };
+```
+
+**This is the only invented number in the project.** Everything in `TUNING` is
+transcribed from this document; this is not, and it is exported separately so it
+cannot be mistaken for one.
+
+> **IT IS A SCHEDULER CONSTANT, NOT A SIMULATION CONSTANT.**
+> `update()` always receives a fixed `dt`. Wall-clock jitter changes **when** a
+> tick fires, never **what** happens inside one. Determinism is therefore
+> unaffected — but only while that separation holds.
+
+Rules:
+
+- **No code reachable from `update()` may read it.** `src/core/loop.js` is the
+  only permitted importer. If a game rule ever depends on it, the scheduler has
+  entered the simulation and this section is void.
+- **Replay must not go through `requestAnimationFrame`.** The headless
+  recorder/player (§12.1.2) steps `update()` directly. `tests/loop.mjs` asserts
+  a recorded stream replays with no loop, clock, or scheduler.
+
+Cause, recorded so nobody "cleans it up": IEEE-754. A refresh rate whose frame
+time does not divide cleanly into one second leaves the accumulator a few ulps
+short of a whole step, so the loop runs a permanent one tick behind. At 144 Hz,
+144 additions of `1/144` sum to just under 1.0 and the 60th update of every
+second slips a frame — 59, 119, 179, forever. A constant phase offset, not
+compounding drift, which is exactly why a short test cannot see it.
 
 **[v0.5] Indexing rules for the arrays above.** `floorTimerSec`,
 `warden.speedMul`, `warden.countByLayout`, and `scoring.treasureByFloor` are all
@@ -553,6 +617,17 @@ Run: `node tests/winnability.mjs && node tests/determinism.mjs && node tests/tim
 
 **[v0.5]** `tests/input.mjs` (§17.7) joins the suite at M11, making five.
 
+**[v0.7]** `tests/loop.mjs` is a **sixth** test file, seeded at M1. `input.mjs`
+was also started early — the touch assertions still land at M11, but its
+source-agnostic assertions exist from M1.
+
+| Test | Asserts | From |
+|---|---|---|
+| `tests/loop.mjs` | Scheduler timing. **Exact integer update counts, never tolerances.** Nine constant rates 30–240 Hz → 60 updates/sec each. 90 Hz and 144 Hz over **600 s** → exactly 36000, which is the only shape that catches a permanent one-tick offset. Seeded jittered VRR deltas in `[1/240, 1/48]` over 60 s → exactly 3600. 30 Hz exercising the multi-substep path. Stall → accumulator **drains**, no catch-up burst, exactly 60/sec immediately after. Backward clock → no steps, no consumed time. Replay runs with no loop, clock, or scheduler (§6.1). | M1 |
+| `tests/input.mjs` | Sector mapping for all 8 directions; fire edge-detected at the source for **any** source; arbitration recency means most-recently-**changed**, not most-recently-polled; `facingLatch` as event vs entity facing as state (§17.1.1); release clears intent without a phantom fire edge; frame codec round-trip. Touch maths added at M11 per §17.7. | M1, extended M11 |
+
+Run: `node tests/winnability.mjs && node tests/determinism.mjs && node tests/timer.mjs && node tests/floors.mjs && node tests/loop.mjs && node tests/input.mjs`
+
 #### **[v0.5]** 12.1.1 Determinism hash — exact contents
 
 `hashGameState()` lives in `src/game/state.js` and the test imports it rather
@@ -640,7 +715,8 @@ C:\Projects\vault-raider\
             scoring.js  render.js
     data/   tuning.js  floors.js  rooms.js  sprites.data.js
     main.js
-  tests/  winnability.mjs  determinism.mjs  timer.mjs  floors.mjs  input.mjs
+  tests/  winnability.mjs  determinism.mjs  timer.mjs  floors.mjs
+          loop.mjs  input.mjs                        [v0.7] six test files
   dist/   index.html
 ```
 
@@ -829,6 +905,23 @@ shoots the wrong way — or nowhere.
 |---|---|---|---|
 | `facingLatch` | the per-tick input struct | **one tick** | `-1` |
 | entity facing | PIP (game state) | **persistent** | unchanged |
+
+**[v0.7] "Lifetime: one tick" means the struct is rebuilt each tick — NOT that
+`facingLatch` goes neutral after one tick of a held direction.** The distinction
+is easy to misread, so, explicitly:
+
+| Tick | Keyboard | `dir` | `facingLatch` | entity facing |
+|---|---|---|---|---|
+| 1 | press E | 2 | 2 | 2 |
+| 2 | hold E | 2 | **2** | 2 |
+| 3 | hold E | 2 | **2** | 2 |
+| 4 | release | -1 | **-1** | **2** |
+| 5 | nothing | -1 | -1 | **2** |
+
+`facingLatch` stays `2` for the whole hold — it tracks `dir` for keyboard and
+gamepad. What is one-tick is the *struct*, which is discarded and rebuilt every
+tick. Entity facing keeps `2` at ticks 4 and 5, which is the property that makes
+firing after release aim correctly (§4.2).
 
 Rules:
 

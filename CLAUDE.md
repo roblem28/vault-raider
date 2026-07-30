@@ -78,6 +78,55 @@ NOT required for local-only git on `docs/`, `SPEC.md`, `CLAUDE.md`, or
 The gate exists so tests and IP review run before code ships. A docs commit has
 nothing to gate.
 
+### Containment check — after EVERY subagent invocation
+
+```powershell
+git status --porcelain
+```
+
+Anything modified outside `.claude/agent-memory/` that the subagent was not
+explicitly asked to change is a **containment breach**. Report it, revert it,
+and log it in `docs/NOTES.md`. Do not silently absorb it into your next commit.
+
+Why this exists rather than a prompt constraint: `memory: project` grants an
+agent `Write` and `Edit` so it can write its memory files, and that grant is not
+scoped to the memory directory. A "read-only" line in an agent's prompt is
+therefore decorative — the tool list wins. This check is verifiable and catches
+the next stray write from any agent, without depending on anyone noticing.
+
+`softlock-hunter` is already contained by `isolation: worktree` and legitimately
+needs `Write`. Leave it alone.
+
+## Standing rules
+
+### A regression test is not done when it passes
+
+It is done when it has been **shown to FAIL against the defect it guards**.
+Revert the fix, watch the test fail, restore the fix, watch it pass.
+
+This is not ceremony. The M1 input-arbitration test passed against the reverted
+fix — registration order was deciding the assertion, not recency — and would
+have been a false negative trusted for eleven more milestones. A test that
+cannot fail is a comment with a runtime cost.
+
+### Do not assert completeness — state a checkable invariant
+
+SPEC §6 claimed to be "complete" and was wrong twice. Replaced with: *any value
+a logic file needs must exist in §6 before that file is written.* That is
+checkable at the moment it matters; "complete" is only checkable by omniscience.
+
+Applies to any claim of the form "all X are Y".
+
+### Challenge findings that contradict their own evidence
+
+Two `fidelity-auditor` findings were withdrawn under challenge in M1 alone — one
+grepped, got the hit, then wrote a conclusion contradicting its own grep output.
+Reviewers are not oracles. Verify a finding before acting on it, and push back
+when the evidence does not support it.
+
+Log every withdrawn finding in `docs/NOTES.md`. If the withdrawal rate stays
+high, the agent file needs rewriting, and that decision needs the data.
+
 ## Milestones
 
 See SPEC.md Â§14. Do not build ahead of the current milestone. Stop at the

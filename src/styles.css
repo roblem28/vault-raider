@@ -1,0 +1,40 @@
+/* VAULT RAIDER - shell styling. SPEC v0.6 sections 1, 9, 17.6.
+   The canvas is the game. Everything here exists to letterbox it and to stop
+   the browser doing anything helpful with touch input. */
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+html, body {
+  width: 100%;
+  /* 100dvh, not 100vh: iOS Safari's dynamic toolbar makes vh lie (17.6). */
+  height: 100dvh;
+  background: #000;
+  overflow: hidden;
+  /* Suppress pull-to-refresh and rubber-banding. */
+  overscroll-behavior: none;
+  /* section 9 / 17.6: no scroll, no pinch zoom, no double-tap zoom. */
+  touch-action: none;
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;   /* no long-press context menu on iOS */
+  -webkit-tap-highlight-color: transparent;
+}
+
+body {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  /* Respect the notch and the home indicator (17.6). */
+  padding: env(safe-area-inset-top) env(safe-area-inset-right)
+           env(safe-area-inset-bottom) env(safe-area-inset-left);
+}
+
+#vr-canvas {
+  display: block;
+  /* Nearest-neighbour at every scale. Integer scaling is enforced in
+     computeViewport; this stops the browser resampling on top of it. */
+  image-rendering: pixelated;
+  image-rendering: crisp-edges;
+  touch-action: none;
+  background: #000;
+}
