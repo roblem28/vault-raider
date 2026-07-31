@@ -42,7 +42,6 @@ export function createRoomRuntime(roomId, entryDoor, rng) {
     // Section 3.3: once a WARDEN intrudes it NEVER leaves. The only escape is
     // leaving the room.
     intruder: null,
-    exitedBy: null,
     // Room-local tick. Hazard sweeps are a pure function of this (section 4.5),
     // so they need no state of their own and stay deterministic.
     ticks: 0,

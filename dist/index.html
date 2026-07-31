@@ -1997,7 +1997,6 @@ function createRoomRuntime(roomId, entryDoor, rng) {
     // Section 3.3: once a WARDEN intrudes it NEVER leaves. The only escape is
     // leaving the room.
     intruder: null,
-    exitedBy: null,
     // Room-local tick. Hazard sweeps are a pure function of this (section 4.5),
     // so they need no state of their own and stay deterministic.
     ticks: 0,
@@ -2562,6 +2561,11 @@ function applyPlayerDeath(state) {
 function hashGameState(state) {
   const nums = [];
   nums.push(state.rng.getState(), state.tick, phaseCode(state.phase));
+  // phaseTicks STEERS: FLOOR_CLEAR_BONUS advances the floor on
+  // `phaseTicks >= zoom.durationTicks`. Found missing by tests/statehash.mjs.
+  nums.push(state.phaseTicks);
+  // Which room a pending zoom will open. Steers enterRoom.
+  nums.push(stringCode(state.pendingRoomId));
   // deathFreezeTicks gates WHEN respawn fires. Harmless to omit today because
   // respawn writes fixed values, but M5 makes the result of respawn depend on
   // floor state, so include it now rather than remember to later.
@@ -2602,7 +2606,12 @@ function hashGameState(state) {
     // where the barriers are while hashing identical.
     nums.push(1, r.treasureTaken ? 1 : 0, r.intruder ? 1 : 0, r.ticks);
     for (const m of r.monsters) {
-      nums.push(m.x, m.y, m.dir, m.hp, m.alive ? 1 : 0, m.dodgedArrowId);
+      // bounceX/bounceY carry a BOUNCER's ricochet direction (section 4.4) and
+      // decide where it goes next. Third instance of the unhashed-behaviour
+      // -field class, after M3's WARDEN corner-clip and M4's room.ticks - which
+      // is why tests/statehash.mjs now enforces this mechanically.
+      nums.push(m.x, m.y, m.dir, m.hp, m.alive ? 1 : 0, m.dodgedArrowId,
+        m.bounceX, m.bounceY);
     }
     for (const c of r.corpses) nums.push(c.tx, c.ty, c.phase, c.phaseTicks);
     // No per-room arrow to hash: there is one arrow and it is hashed above
@@ -2622,6 +2631,15 @@ function pushWardenState(nums, w) {
   nums.push(w.x, w.y, w.routeIdx,
     w.checkTicks, w.minX, w.maxX, w.minY, w.maxY,
     w.slideTicks, w.slideAxis, w.slideSign);
+}
+
+// Stable numeric code for a string, so ids reach the hash without a lookup
+// table that would need maintaining alongside the room list.
+function stringCode(str) {
+  if (!str) return 0;
+  let acc = 7;
+  for (let i = 0; i < str.length; i++) acc = (acc * 31 + str.charCodeAt(i)) >>> 0;
+  return acc;
 }
 
 const PHASE_ORDER = Object.keys(GAME_PHASES);
@@ -3124,6 +3142,16 @@ function renderHud(gfx, state) {
   if (state.room && state.room.intruder) {
     gfxDrawDebugText(gfx, 'WARDEN IN ROOM',
       TUNING.logicalW / 2 - 42, HUD_MARGIN + 8, PAL_WARN, HUD_TEXT_PX);
+  }
+
+  // Section 14 puts the bonus MATHS at M8; M4 built only the transition. Say so
+  // on screen rather than showing a silent 0, which would read as a scoring bug
+  // during M5-M7 play and could quietly survive to M8.
+  if (state.phase === GAME_PHASES.FLOOR_CLEAR_BONUS) {
+    gfxDrawDebugText(gfx, 'FLOOR CLEAR',
+      TUNING.logicalW / 2 - 33, TUNING.logicalH / 2 - 10, PAL_PIP, HUD_TEXT_PX * 2);
+    gfxDrawDebugText(gfx, 'BONUS: M8',
+      TUNING.logicalW / 2 - 27, TUNING.logicalH / 2 + 6, PAL_HUD, HUD_TEXT_PX);
   }
 
   if (state.phase === GAME_PHASES.GAME_OVER) {

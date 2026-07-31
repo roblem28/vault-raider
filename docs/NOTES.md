@@ -795,6 +795,119 @@ and the first instinct of blaming the new code would have been wrong twice.
 
 ---
 
+## M5 — death handling under pressure (2026-07-31)
+
+### M5-E1 — the hash rule is now MECHANICAL: `tests/statehash.mjs`
+
+Third instance of the class, so it gets the treatment the PRNG ban and
+cross-references got. Resolving to be careful failed twice.
+
+It walks the live state tree, perturbs every leaf, and requires the hash to
+change — unless the path is on an explicit registry, in which case it requires
+the hash *not* to change. **A path on neither side fails until somebody
+classifies it.** That catches both directions: a behaviour field missing from
+the hash, and a cosmetic field wrongly in it, which makes replays brittle for
+nothing.
+
+**It immediately found four real gaps and two false claims of my own.**
+
+Unhashed and steering:
+
+| Field | Why it steers |
+|---|---|
+| `phaseTicks` | `FLOOR_CLEAR_BONUS` advances the floor on `phaseTicks >= zoom.durationTicks` |
+| `pendingRoomId` | decides which room `enterRoom` opens |
+| `monsters.#.bounceX` / `bounceY` | a BOUNCER's ricochet direction — **the third instance**, added by me at M4 |
+
+And two registry entries that were wrong: I claimed `corpses.#.phaseTicks` and
+`intruder.routeIdx` were absent from the hash; both were already in it. The
+registry is enforced in that direction too, which is what caught me.
+
+`exitedBy` was deleted outright — vestigial, never read.
+
+**Exclusion registry, 28 paths, reported in full at this checkpoint:**
+
+- *Render interpolation only* (10) — `prevX`/`prevY` on player, arrow, wardens,
+  monsters, intruder. Read solely by `render.js` to lerp between ticks.
+- *Constant for the run* (1) — `seed`. The RNG's evolving state is hashed.
+- *Derived or redundant* (4) — `gameOver` (redundant with phase), `floorIndex`
+  (hashed via the descriptor), `player.alive` (never read), `rooms.#.id`.
+- *Fixed at spawn from room data* (11) — monster `type`, `behaviour`,
+  `placeholder`, `speedFrac`, `dodge`, `spawnTx`, `spawnTy`, `seed`, `hand`;
+  warden and intruder `speedMul`. Changing one authors a different room, it does
+  not reach a different game state.
+- *Overwritten every use* (2) — `floorReturn.x/y`, rewritten from the door on
+  every room exit.
+
+### M5-E2 — §14 restructured so it stops being a second source of truth
+
+Three drifts, and the content spec was right every time. §14.0 `[v1.1]` now
+states the rule and the rows reference `§5` / `§4.4` instead of naming counts,
+archetypes, or rooms.
+
+`refs.mjs` enforces the checkable half: **no §14 row may name an archetype or a
+ship room name.** Mutation-verified — planting `` `BLINKER` `` in the M6 row
+fails it.
+
+**The numeral half is deliberately NOT checked.** "No §14 row may contain a
+number that also appears in §4.4 or §5" would fire on "40×30 mask",
+"5-substep cap", "320×240 scaling", "144 Hz", "floors 2–3", "all 12" — all
+legitimate. A check that noisy would be ignored within a milestone, and this
+project has already retired one rule for crying wolf. No check beats a broken
+one.
+
+### M5-E3 — the 13-mechanic mutation audit: 9 have teeth, 3 gaps, 1 not yet testable
+
+Every §3 non-negotiable was broken in turn and the whole suite run against it.
+
+**Have teeth (9):** 3.1 WARDEN invulnerability · 3.2 hall fire · 3.3 intrusion ·
+3.4 the per-floor clock · 3.5a corpse blocking · 3.5b corpse lethality ·
+3.6 corpse-shot punishment · 3.7 safe tile · 3.8 one arrow · 3.13 winnability.
+
+**No test caught it (3):**
+
+- **3.9 facing decoupled from movement.** Moving the facing latch *after* the
+  neutral-dir early return — so a zero-length tap stops reorienting PIP — passes
+  every suite. `input.mjs` tests the input *struct*; nothing tests PIP's facing
+  through `updatePlayerFloor`. This is one of CLAUDE.md's "always getting
+  broken" four.
+- **3.10 diagonals beat cardinals.** Setting `diagonalDodgeMul` to 1.0 changes
+  nothing, because every dodge test fires a cardinal shot. The diagonal path has
+  never executed in a test.
+- **3.11 per-tier dodge competence.** Zeroing all three tiers passes — and the
+  reason is worth recording, because **the test is self-referential**: it reads
+  the expected value from `TUNING.dodgeSkill[tier]`, so mutating the constant
+  moves both sides of the comparison. It proves "observed matches the constant",
+  never "the constant is what §6 says". Same shape as the three
+  passing-for-an-unrelated-reason tests already found.
+
+**Not yet testable (1):** 3.12 trap-on-pickup. All four Floor-1 rooms ship
+`spawnOnPickup: []`, so there is nothing to break — the first real trap room is
+Floor 2 at M7. Reporting it as untestable rather than as a gap.
+
+Not fixed at M5, per instruction. 3.11 is the one I would fix first: a
+self-referential assertion is worse than a missing one, because it reads as
+coverage.
+
+### M5-E4 — geometry vocabulary after the v1.0 dodge ruling
+
+**Corridor width is now BINARY for monsters.** 1-tall means no dodge at any
+tier; anything ≥2 means the full labelled rate. Graduated dodge is explicitly
+rejected — silent geometry scaling is what v1.0 removed, and a gradient would
+trade one invisible mechanic for a subtler one.
+
+**Narrowness still matters, but only for PIP.** It restricts escape routes,
+raises corpse-sealing risk, and limits arrow angles. It does nothing to monster
+dodge.
+
+**So M7's eight rooms must get their variety from monster count and mix,
+treasure placement relative to doors, hazard timing, door count, and sightlines
+— not from corridor width.** A room that is "hard because it is narrow" is now
+hard for PIP alone, which is a different design statement from the one THE COIL
+was built on.
+
+---
+
 ## Withdrawn reviewer findings
 
 Tracked per CLAUDE.md: if the withdrawal rate stays high, the agent file needs

@@ -307,6 +307,16 @@ export function renderHud(gfx, state) {
       TUNING.logicalW / 2 - 42, HUD_MARGIN + 8, PAL_WARN, HUD_TEXT_PX);
   }
 
+  // Section 14 puts the bonus MATHS at M8; M4 built only the transition. Say so
+  // on screen rather than showing a silent 0, which would read as a scoring bug
+  // during M5-M7 play and could quietly survive to M8.
+  if (state.phase === GAME_PHASES.FLOOR_CLEAR_BONUS) {
+    gfxDrawDebugText(gfx, 'FLOOR CLEAR',
+      TUNING.logicalW / 2 - 33, TUNING.logicalH / 2 - 10, PAL_PIP, HUD_TEXT_PX * 2);
+    gfxDrawDebugText(gfx, 'BONUS: M8',
+      TUNING.logicalW / 2 - 27, TUNING.logicalH / 2 + 6, PAL_HUD, HUD_TEXT_PX);
+  }
+
   if (state.phase === GAME_PHASES.GAME_OVER) {
     gfxDrawDebugText(gfx, 'GAME OVER',
       TUNING.logicalW / 2 - 24, TUNING.logicalH / 2 - 4, PAL_PIP, HUD_TEXT_PX * 2);

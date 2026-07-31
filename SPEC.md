@@ -807,6 +807,13 @@ Run: `node tests/winnability.mjs && node tests/determinism.mjs && node tests/tim
 
 **[v0.5]** `tests/input.mjs` (§17.7) joins the suite at M11, making five.
 
+**[v1.1] The hash-completeness rule is now MECHANICAL.** §12.1.1's list is
+maintained by hand and drifted three times — M3's WARDEN corner-clip fields,
+M4's `room.ticks`, and M5's BOUNCER `bounceX`/`bounceY`. Each time a field that
+steers behaviour reached state and never reached the hash. `tests/statehash.mjs`
+enforces it, on the same reasoning that gave the PRNG ban `determinism.mjs` and
+cross-references `refs.mjs`: **a rule nothing checks is a comment.**
+
 **[v0.7]** `tests/loop.mjs` is a **sixth** test file, seeded at M1. `input.mjs`
 was also started early — the touch assertions still land at M11, but its
 source-agnostic assertions exist from M1.
@@ -814,6 +821,7 @@ source-agnostic assertions exist from M1.
 | Test | Asserts | From |
 |---|---|---|
 | `tests/loop.mjs` | Scheduler timing. **Exact integer update counts, never tolerances.** Nine constant rates 30–240 Hz → 60 updates/sec each. 90 Hz and 144 Hz over **600 s** → exactly 36000, which is the only shape that catches a permanent one-tick offset. Seeded jittered VRR deltas in `[1/240, 1/48]` over 60 s → exactly 3600. 30 Hz exercising the multi-substep path. Stall → accumulator **drains**, no catch-up burst, exactly 60/sec immediately after. Backward clock → no steps, no consumed time. Replay runs with no loop, clock, or scheduler (§6.1). | M1 |
+| `tests/statehash.mjs` | **[v1.1]** `hashGameState` COMPLETENESS, by mutation. Walks the live state tree, perturbs every leaf, and requires the hash to change — unless the path is on an explicit exclusion registry, in which case it requires the hash NOT to change. A field on neither side fails until somebody classifies it. Catches both directions: a behaviour field missing from the hash, and a cosmetic field wrongly in it (which makes replays brittle for nothing). | M5 |
 | `tests/input.mjs` | Sector mapping for all 8 directions; fire edge-detected at the source for **any** source; arbitration recency means most-recently-**changed**, not most-recently-polled; `facingLatch` as event vs entity facing as state (§17.1.1); release clears intent without a phantom fire edge; frame codec round-trip. Touch maths added at M11 per §17.7. | M1, extended M11 |
 
 Run: `node tests/winnability.mjs && node tests/determinism.mjs && node tests/timer.mjs && node tests/floors.mjs && node tests/loop.mjs && node tests/input.mjs`
@@ -954,15 +962,31 @@ node tests\winnability.mjs        # etc.
 
 ## 14. **[v0.2]** MILESTONES — reordered for an early feel gate
 
+### **[v1.1]** 14.0 Milestone rows REFERENCE the content spec; they never duplicate it
+
+**A row that restates a count, an archetype, or a room name is a second source
+of truth, and it has lost every time.** Three drifts so far:
+
+| Drift | §14 said | The content spec said | Right |
+|---|---|---|---|
+| M2 WARDEN count | "1 WARDEN on a route" | §4.3 `countByLayout[0]` = 2 | §4.3 |
+| M4 BOUNCER | scheduled at M6 | §5 puts BOUNCERs in two Floor-1 rooms | §5 |
+| M11 ordering | after M9 | mobile needs the M9 a11y pass to cover it | §17 |
+
+So rows now say *"per §5"* and *"per §4.4"* rather than naming the thing. A
+milestone that needs an archetype or hazard earlier than this table implies
+**builds it then** — the content spec decides what a floor contains, and §14
+only decides the order floors arrive in.
+
 | # | Milestone | Validation |
 |---|---|---|
 | M1 | Loop (clamped accumulator, 5-substep cap), 320×240 scaling, seeded RNG, **[v0.4]** unified input model per §17.1 with latched facing | Debug rect at exactly 60 Hz on a 144 Hz display; tab-away 30 s causes no burst |
-| M2 | Floor view: 40×30 mask, axis-separated collision, **[v0.8]** WARDENs per §4.3 (`countByLayout`, so 2 on floor 1), death on contact, **hall firing** | Loop the corridor, get killed, fire a useless arrow through a WARDEN |
-| **M3** | **VERTICAL SLICE** — one room (`THE COIL`), zoom in/out, arrow + one-alive rule, `CRAWLER` + dodge, corpse decay/lethality/blocking, treasure + safe tile, floor timer + intrusion + siren | **FEEL GATE §12.3.** Full tension arc playable in one room |
-| M4 | Room sealing, all 4 Floor-1 rooms, stairs unlock, floor descend | Loot floor 1, descend |
+| M2 | Floor view: 40×30 mask, axis-separated collision, **[v1.1]** WARDENs per §4.3, death on contact, **hall firing** | Loop the corridor, get killed, fire a useless arrow through a WARDEN |
+| **M3** | **VERTICAL SLICE** — **[v1.1]** one Floor-1 room per §5 and every archetype it requires, zoom in/out, arrow + one-alive rule, dodge, corpse decay/lethality/blocking, treasure + safe tile, floor timer + intrusion + siren | **FEEL GATE §12.3.** Full tension arc playable in one room |
+| M4 | **[v1.1]** Room sealing, ALL Floor-1 rooms per §5 **including every archetype and hazard those rooms require**, stairs unlock, floor descend | Loot floor 1, descend |
 | M5 | Death handling: life loss, corpse clear, unlooted-room reset, timer untouched, respawn invuln | `tests/timer.mjs` green; deliberate softlock attempt fails to softlock |
-| M6 | Remaining archetypes: `BOUNCER` `DROPPER` `STALKER` `BRUTE` `BLINKER` | Isolated test room per archetype |
-| M7 | Floors 2–3 content + shaped rooms + trap-on-pickup | `tests/winnability.mjs` green on all 12 |
+| M6 | **[v1.1]** Remaining archetypes per §4.4 **not already required by an earlier milestone** | Isolated test room per archetype |
+| M7 | **[v1.1]** Floors 2–3 content per §5 + shaped rooms + trap-on-pickup | `tests/winnability.mjs` green on all 12 |
 | M8 | Scoring, time-bonus formula, extra lives, HUD | Hand-reconcile a run against §6 |
 | M9 | Audio (gesture-gated), accessibility options, `localStorage` | Manual §12.2 |
 | M10 | Attract mode, intro walk, gamepad, floors 4–9 escalation + floor-9 loop | Cold start → game over, zero console output |

@@ -258,6 +258,11 @@ export function applyPlayerDeath(state) {
 export function hashGameState(state) {
   const nums = [];
   nums.push(state.rng.getState(), state.tick, phaseCode(state.phase));
+  // phaseTicks STEERS: FLOOR_CLEAR_BONUS advances the floor on
+  // `phaseTicks >= zoom.durationTicks`. Found missing by tests/statehash.mjs.
+  nums.push(state.phaseTicks);
+  // Which room a pending zoom will open. Steers enterRoom.
+  nums.push(stringCode(state.pendingRoomId));
   // deathFreezeTicks gates WHEN respawn fires. Harmless to omit today because
   // respawn writes fixed values, but M5 makes the result of respawn depend on
   // floor state, so include it now rather than remember to later.
@@ -298,7 +303,12 @@ export function hashGameState(state) {
     // where the barriers are while hashing identical.
     nums.push(1, r.treasureTaken ? 1 : 0, r.intruder ? 1 : 0, r.ticks);
     for (const m of r.monsters) {
-      nums.push(m.x, m.y, m.dir, m.hp, m.alive ? 1 : 0, m.dodgedArrowId);
+      // bounceX/bounceY carry a BOUNCER's ricochet direction (section 4.4) and
+      // decide where it goes next. Third instance of the unhashed-behaviour
+      // -field class, after M3's WARDEN corner-clip and M4's room.ticks - which
+      // is why tests/statehash.mjs now enforces this mechanically.
+      nums.push(m.x, m.y, m.dir, m.hp, m.alive ? 1 : 0, m.dodgedArrowId,
+        m.bounceX, m.bounceY);
     }
     for (const c of r.corpses) nums.push(c.tx, c.ty, c.phase, c.phaseTicks);
     // No per-room arrow to hash: there is one arrow and it is hashed above
@@ -318,6 +328,15 @@ function pushWardenState(nums, w) {
   nums.push(w.x, w.y, w.routeIdx,
     w.checkTicks, w.minX, w.maxX, w.minY, w.maxY,
     w.slideTicks, w.slideAxis, w.slideSign);
+}
+
+// Stable numeric code for a string, so ids reach the hash without a lookup
+// table that would need maintaining alongside the room list.
+function stringCode(str) {
+  if (!str) return 0;
+  let acc = 7;
+  for (let i = 0; i < str.length; i++) acc = (acc * 31 + str.charCodeAt(i)) >>> 0;
+  return acc;
 }
 
 const PHASE_ORDER = Object.keys(GAME_PHASES);

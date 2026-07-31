@@ -197,7 +197,38 @@ assert(`every MANIFEST entry exists on disk (${manifest.length} entries)`,
 assert('every src/*.js file is in the MANIFEST',
   srcUnlisted.length === 0, `unlisted: ${srcUnlisted.join(', ')}`);
 
-// --- 6. NOT CHECKED: cited tuning keys ---------------------------------------
+// --- 6. section 14 must not duplicate the content spec -----------------------
+//
+// Section 14.0 [v1.1]: milestone rows REFERENCE §4.4 and §5, never restate
+// them. A row naming an archetype or a room is a second source of truth, and it
+// lost all three times it disagreed.
+//
+// ONLY the archetype and room-name half is checked. The numeral half - "no §14
+// row should contain a number that also appears in §4.4 or §5" - is NOT cleanly
+// checkable: §14 legitimately says "40×30 mask", "5-substep cap", "320×240
+// scaling", "144 Hz", "floors 2-3", "all 12". A check that flagged those would
+// be noise, and this project has already retired one rule for crying wolf.
+{
+  // The first cell must be JUST the milestone id. Section 14.0's own drift
+  // table has rows like "| M4 BOUNCER | scheduled at M6 | ..." which DOCUMENT a
+  // past drift rather than being milestone rows, and a looser match ate them.
+  const rows = SPEC.split('\n').filter(
+    (l) => /^\|\s*(?:\*\*)?(?:\[v[\d.]+\]\*\*\s*)?M\d+(?:\*\*)?\s*\|/.test(l)
+  );
+  const ARCHETYPES = ['CRAWLER', 'BOUNCER', 'DROPPER', 'STALKER', 'BRUTE', 'BLINKER'];
+  // Ship names from §5, which are what a row would wrongly restate.
+  const SHIP_NAMES = [...SPEC.matchAll(/`(THE [A-Z]+)`/g)].map((m) => m[1]);
+  const dupes = [];
+  for (const row of rows) {
+    for (const name of [...ARCHETYPES, ...new Set(SHIP_NAMES)]) {
+      if (row.includes(name)) dupes.push(`${name} in "${row.slice(0, 46)}..."`);
+    }
+  }
+  assert(`no §14 row names an archetype or room (${rows.length} rows checked)`,
+    dupes.length === 0, dupes.slice(0, 4).join('; '));
+}
+
+// --- 7. NOT CHECKED: cited tuning keys ---------------------------------------
 //
 // A check that every `TUNING.x.y` reference resolves was written here and then
 // REMOVED, because it did not work in either direction. It missed a planted
@@ -215,7 +246,7 @@ assert('every src/*.js file is in the MANIFEST',
 // rebuilt, extract keys with a real brace-aware walk, not a line regex, and
 // mutation-verify it against a planted citation BEFORE trusting it.
 
-// --- 7. the checker must be capable of failing ------------------------------
+// --- 8. the checker must be capable of failing ------------------------------
 {
   const planted = 'see docs/NOTES.md ZZ99';
   const m = [...planted.matchAll(NOTE_REF)];
