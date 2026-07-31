@@ -14,6 +14,11 @@ tests/scratch/
 src_test_dup/
 *_dup/
 
+# Subagent git worktrees (isolation: worktree). Disposable copies of the repo -
+# softlock-hunter runs in one. Untracked but NOT previously ignored, so they
+# would have been swept into the next commit.
+.claude/worktrees/
+
 # Scratch archives and superseded spec copies. SPEC.md is the only spec in the repo.
 *.zip
 vault-raider-spec-v*.md

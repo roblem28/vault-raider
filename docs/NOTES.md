@@ -908,6 +908,191 @@ was built on.
 
 ---
 
+## M5 softlock-hunter findings (2026-07-31)
+
+**Recorded verbatim from the run, before compaction. Not compressed.**
+
+**Verification status: I had NOT independently verified either confirmed
+exploit when this was written.** A probe was written
+(`scratchpad/verify5.mjs`) and never run — the connection dropped first. Both
+are therefore agent-reported, and every `file:line` below is the agent's
+citation, not one I confirmed. Treat line numbers as approximate until checked.
+
+### CONFIRMED SOFTLOCKS: none
+
+Every corpse/doorway-blocking scenario it constructed self-resolves:
+
+- Corpse decay is unconditional every room tick (`src/game/entities.js:633-644`,
+  `updateCorpses`) and takes exactly 600 ticks (10 s) regardless of position,
+  well under floor 1's 45 s intrusion timer. It cannot be paused by anything
+  except the player's own arrow.
+- Any player death anywhere on the floor clears all corpses and resets all
+  unlooted rooms unconditionally (`src/game/state.js:226-251`
+  `applyPlayerDeath` → `src/game/room.js:194-205` `resetUnlootedRoom`) — a
+  floor-wide safety net independent of local decay.
+- `tests/rooms.mjs` already regression-tests "a corpse in the doorway can trap
+  and kill PIP" and re-enterability after that death.
+
+### CONFIRMED EXPLOIT 1 — floor descent silently refills lives
+
+**One line:** descending a floor rebuilds the player, restoring `lives` to
+`startingLives` (3) and discarding every life actually lost on that floor.
+
+**Reproduction** — script `tests/scratch/lives_floor_reset.mjs` in the agent's
+worktree (`.claude/worktrees/agent-a426e4e7f339f1871/`), driving the real
+`createGameState` / `updateGame` / `applyPlayerDeath` / `startFloor`:
+
+1. Start a run — 3 lives.
+2. Take 2 real deaths via `applyPlayerDeath`, the same function a monster,
+   corpse, WARDEN or hazard touch invokes → lives = 1.
+3. Loot all 4 floor-1 rooms. The script marks `floor.looted[id] = true`
+   directly; that is orthogonal to the exploit and the real path is already
+   proven reachable by `tests/floors.mjs`.
+4. Walk onto the unlocked stairs tile.
+5. Run out `FLOOR_CLEAR_BONUS` (`zoom.durationTicks` ticks) to trigger
+   `startFloor(state, state.floorIndex + 1)`.
+6. **Observed: `state.floor.player.lives === 3`, not 1.**
+
+**Cause:** `src/game/floor.js:35` (`createFloorRuntime`) always builds a brand
+new `player` via `createPlayer(...)`, and `src/game/state.js:54-58`
+(`startFloor`) — called on **every** floor descent, not just at boot —
+unconditionally replaces `state.floor` with a fresh runtime including that
+fresh player.
+
+**Player gain:** a player can never truly run out of lives as long as they
+clear a floor before their 3rd death on it. Game over becomes effectively
+per-floor rather than per-run. Contradicts SPEC.md:725's phase diagram
+(`any → PLAYER_DEATH → (lives>0 ? FLOOR_VIEW : GAME_OVER)`) and SPEC.md:206
+("Lives: 3 start; +1 per `extraLifeEvery`"), both of which describe a
+run-persistent counter. The HUD (`render.js:285`) shows the value directly, so
+it is player-visible, not just a hash artifact.
+
+**Why no test caught it:** `tests/floors.mjs`'s M4 descent test sets
+`p.invulnTicks = 1e9` specifically to avoid dying near the descent, and neither
+it nor `tests/timer.mjs` asserts that `player.lives` survives `startFloor`.
+
+**Minimal fix it proposed:** in `startFloor`, capture
+`state.floor ? state.floor.player.lives : TUNING.player.startingLives` before
+replacing `state.floor`, and restore it onto the new runtime's player
+afterwards.
+
+### CONFIRMED EXPLOIT 2 — respawn invulnerability freezes during zoom and bonus phases
+
+**One line:** `invulnTicks` does not decrement during `ROOM_ZOOM_IN`,
+`ROOM_ZOOM_OUT` or `FLOOR_CLEAR_BONUS`, so invulnerability is banked across
+transitions and carries substantially into room view.
+
+**Reproduction** — script `tests/scratch/invuln_zoom.mjs` in the same worktree:
+
+1. Set `player.invulnTicks = 120`.
+2. Walk PIP onto a room door to trigger `ROOM_ZOOM_IN`.
+3. Measure `invulnTicks` across the 24-tick zoom transition.
+4. **Observed: 110 immediately before the transition tick, 109 immediately
+   after entering `ROOM_VIEW` — a drop of 1, not 24. 23 of the 24 zoom ticks
+   are free.**
+
+**Cause:** the `ROOM_ZOOM_IN` / `ROOM_ZOOM_OUT` / `FLOOR_CLEAR_BONUS` cases in
+`updateGame`'s switch (`src/game/state.js`) only advance `zoomTicks` /
+`phaseTicks`. `player.invulnTicks` is decremented **only** inside `updateFloor`
+(`src/game/floor.js:82-84`) and `updateRoom` (`src/game/room.js:168-169`),
+neither of which runs during those phases.
+
+**Player gain:** a freshly respawned player who immediately dashes to an
+unlooted room door retains most of their 2.0 s invulnerability *inside* the
+room, past whatever a monster near the entrance would otherwise do, and banks
+roughly 0.38 s of unconsumed protection per zoom transition. Low severity
+alone, but a reproducible violation of "timers only move during interactive
+phases", and the same class as Exploit 1: a phase documented as
+non-interactive was assumed to mean nothing else changes, which was never
+audited.
+
+**Minimal fix it proposed:** decrement `invulnTicks` unconditionally once per
+tick in `updateGame` — the same unconditional-of-phase treatment CLAUDE.md
+already mandates for `tickFloorTimer` — rather than only inside the two
+view-specific update functions.
+
+### HYPOTHESES — raised, not confirmed
+
+**H1 — tab backgrounding may pause the floor intrusion timer for free.** The
+loop is pure `requestAnimationFrame` (`src/core/loop.js`); `tickFloorTimer`
+only runs inside `update()`, which only fires when rAF fires, which browsers
+suspend when a tab is hidden. `advanceAccumulator` deliberately **drains**
+rather than carries backlog after a stall — by design, to avoid a catch-up
+burst — but that also means backgrounded wall-clock time converts to zero ticks
+rather than being banked. Could not confirm in Node: no real rAF suspension to
+observe. **To confirm:** in an actual browser, background the tab 30 s+
+mid-floor and check whether `floorElapsedSec` reflects ~30 s of progress on
+return, or none.
+
+**H2 — BRUTE (M6, not yet built) body-blocking a doorway.** Today the only
+blocking mechanism is corpse tile-occupancy, via a Set built solely from
+`room.corpses` (`src/game/entities.js:627-631`) and consulted only by
+`updatePlayerRoom`. When BRUTE ships per §4.4, whoever wires its
+"body-blocks doorways" behaviour will need an equivalent mechanism. The
+existing death-triggered room reset does not relocate or reset a **live**
+monster mid-life, though the room-intruder WARDEN — which ignores all blocking
+— still provides an eventual release valve. Flag for re-audit at M6.
+
+**H3 — future floor layouts (2 and 3, at M7) spawning a WARDEN overlapping
+PIP's initial spawn tile.** Floor start gives `invulnTicks = 0`; there is no
+grace period at floor start, only on death-respawn. No test enforces a minimum
+distance between `layout.spawn` and warden route waypoints. Floor 1's actual
+coordinates are far apart, so it does not fire today.
+
+### CLEARED — attacks tried that the code correctly prevents
+
+Kept so the next audit does not repeat the work.
+
+- **Corpse on the treasure tile / corpse in the only doorway, as a permanent
+  block** — resolves via unconditional 10 s decay, or via any death's global
+  reset.
+- **`CORPSE_SHOT_MODE` reset triggered by anything other than the player's own
+  arrow** — `shootCorpse` (`src/game/entities.js:648-655`) has exactly one call
+  site (`src/game/room.js:133`), gated by the single shared `arrow` object,
+  which only goes alive via `requestFire`, itself only invoked from
+  `input.fire` (`src/game/room.js:107`, `src/game/floor.js:71-73`). All writes
+  to `corpse.phase` / `corpse.phaseTicks` in `src/` were grepped: exactly two,
+  both inside `shootCorpse`. **This was the specific suspicion raised in the
+  M5 brief, and it is cleared.**
+- **Monster or WARDEN parked in a doorway blocking PIP** — blocking is corpse
+  tile-occupancy only, structurally: `corpseBlockedTiles`
+  (`src/game/entities.js:627-631`) is the only blocked-tile set ever passed to
+  `updatePlayerRoom` (`src/game/room.js:104-105`), and monster/WARDEN positions
+  are never consulted by player movement.
+- **Safe tile combined with an in-room WARDEN, camped indefinitely** —
+  `playerOnSafeTile` (`src/game/room.js:65-75`) is a pure tile-overlap test
+  independent of `treasureTaken`, so this is possible and is explicitly
+  intended per §3.7. Not a defect.
+- **Double-crediting a room's treasure, or re-entering a sealed room** —
+  `floor.looted[id]` gates re-entry (`src/game/state.js:80`); `leaveRoom`
+  (`src/game/state.js:191-216`) is the only score-add site and runs exactly once
+  per zoom-out. A death before reaching the door actually **reverts** the
+  pickup — harsh, not exploitable.
+- **Kill-score farming via `CORPSE_SHOT_MODE: 'RESET_ALL'`** —
+  `TUNING.scoring.monsterKill` is wired to zero code paths at this milestone;
+  kill scoring is M8. Nothing to farm yet. **Re-check the moment M8 wires it.**
+- **Doorway passability, 6×6 box in an 8 px 1-tile gap** — already covered
+  exhaustively by `tests/rooms.mjs` and `tests/floors.mjs` (1368 combinations,
+  mutation-verified, NOTES M2-F3 / M3-F6). Collision code re-read, no new gap.
+- **Deliberate death resetting the floor timer** —
+  `TUNING.flags.DEATH_RESETS_FLOOR_TIMER` is false and `applyPlayerDeath` never
+  writes `floor.elapsedTicks`. Covered by `tests/timer.mjs`.
+- **Pause exploit** — `pause` exists only as an unused key binding; no game
+  logic reads it yet.
+
+### Containment
+
+The agent ran with `isolation: worktree` and it held — no scratch files landed
+in the main tree. Its scratch scripts and memory live under
+`.claude/worktrees/agent-a426e4e7f339f1871/`.
+
+**But `.claude/worktrees/` was NOT gitignored**, so the whole disposable
+worktree would have been swept into the next commit. Added to `.gitignore`.
+That is a containment gap in the harness, not agent misbehaviour — the same
+shape as `src_test_dup/` at M1.
+
+---
+
 ## Withdrawn reviewer findings
 
 Tracked per CLAUDE.md: if the withdrawal rate stays high, the agent file needs
