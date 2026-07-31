@@ -282,8 +282,8 @@ export function renderHud(gfx, state) {
   const left = Math.max(0, limit - elapsed);
 
   const line = 'FLOOR ' + (floor.descriptor.floorIndex + 1) +
-    '   LIVES ' + floor.player.lives +
-    '   SCORE ' + state.score +
+    '   LIVES ' + state.run.lives +
+    '   SCORE ' + state.run.score +
     '   CLOCK ' + left.toFixed(1);
   gfxDrawDebugText(gfx, line, HUD_MARGIN, HUD_MARGIN, PAL_HUD, HUD_TEXT_PX);
 

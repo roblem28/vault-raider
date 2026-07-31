@@ -1315,11 +1315,15 @@ function createPlayer(tx, ty) {
     // PERSISTENT entity facing (section 17.1.1). NOT the input struct's
     // facingLatch, which is a one-tick event. Starts East.
     facing: 2,
-    lives: TUNING.player.startingLives,
     invulnTicks: 0,
     alive: true
   };
 }
+// NO `lives` FIELD HERE, DELIBERATELY (section 4.1 [v1.2]). This object is
+// FLOOR-SCOPED: createFloorRuntime builds a fresh one on every descent, so any
+// run-scoped counter stored here is silently reset by startFloor. That is
+// exactly how lives came to refill on every floor. Run-scoped state lives in
+// state.run and nowhere else.
 
 function playerBox(player, inRoom) {
   const s = inRoom ? TUNING.player.hitboxRoom : TUNING.player.hitboxFloor;
@@ -2120,8 +2124,10 @@ function updateRoom(room, player, arrow, input, descriptor, elapsedSec) {
 
   // Death checks. The safe tile beats everything (section 3.7).
   let death = false;
+  // READ ONLY. The decrement is tickPlayerInvuln in updateGame, unconditional
+  // and above the phase dispatch (section 4.1 [v1.2]).
   if (player.invulnTicks > 0) {
-    player.invulnTicks--;
+    // deliberately empty: invulnerable, no death check runs
   } else if (!playerOnSafeTile(room, player)) {
     for (const monster of room.monsters) {
       if (monsterTouchesPlayer(monster, player)) death = true;
@@ -2229,6 +2235,19 @@ function tickFloorTimer(floor) {
   floor.elapsedTicks++;
 }
 
+// SPEC 4.1 [v1.2]. Sited HERE, beside tickFloorTimer, because it carries the
+// identical rule: updateGame calls it once per tick above the phase dispatch,
+// on every phase, with no condition. It is a player field rather than a floor
+// field, but it is a per-tick counter that no phase may skip, and that is what
+// decides where it lives.
+//
+// Was previously decremented inside updateFloor and updateRoom, which meant
+// zoom transitions, the floor-clear bonus and the death freeze all ran for
+// free - measured at 0 of 24 zoom ticks consumed.
+function tickPlayerInvuln(player) {
+  if (player.invulnTicks > 0) player.invulnTicks--;
+}
+
 function floorElapsedSec(floor) {
   return floor.elapsedTicks * TUNING.dt;
 }
@@ -2252,9 +2271,11 @@ function updateFloor(floor, input) {
     updateWarden(warden, floor.player, floor.mask, elapsed, speedMul, floor.rng);
   }
 
-  // Contact kills unless PIP is in respawn invulnerability.
+  // Contact kills unless PIP is in respawn invulnerability. READ ONLY - the
+  // decrement is tickPlayerInvuln, called unconditionally from updateGame
+  // (section 4.1 [v1.2]). Do not decrement here; that is what let the zoom
+  // phases hand out free invulnerability.
   if (floor.player.invulnTicks > 0) {
-    floor.player.invulnTicks--;
     return { death: false };
   }
   for (const warden of floor.wardens) {
@@ -2326,6 +2347,32 @@ function floorLayoutCount() {
 // No DOM access. Safe to import from tests/.
 
 
+// SPEC 4.1 [v1.2]. THE RUN/FLOOR STATE SPLIT.
+//
+// Everything that must survive a descent lives in this object and nowhere else.
+// startFloor replaces state.floor wholesale, so any run-scoped counter kept
+// inside state.floor is silently reset on every descent - which is precisely
+// how `lives` came to refill from 1 back to 3 by walking down the stairs,
+// turning per-run game over into per-floor game over and deleting the risk
+// model the intrusion clock is built on.
+//
+// The split is enforced by construction, not by care: createPlayer no longer
+// HAS a lives field, so there is no floor-scoped place to put one.
+function createRunState() {
+  return {
+    lives: TUNING.player.startingLives,
+    score: 0,
+    // Next score at which an extra life is awarded. The award itself is M8;
+    // the threshold is run-scoped whenever it lands, so it is sited here now
+    // rather than discovered on floor 2 later.
+    nextExtraLifeAt: TUNING.scoring.extraLifeEvery,
+    // Which input source last drove the game (section 17.1). Written at M11,
+    // when touch becomes a third source and the HUD needs to know which
+    // prompts to draw. Run-scoped: switching input source is not a floor event.
+    inputSource: null
+  };
+}
+
 function createGameState(seed, floorIndex) {
   const rng = createRng(seed);
   const state = {
@@ -2334,7 +2381,8 @@ function createGameState(seed, floorIndex) {
     tick: 0,
     phase: GAME_PHASES.FLOOR_VIEW,
     phaseTicks: 0,
-    score: 0,
+    // RUN-SCOPED. Never rebuilt by startFloor. See createRunState.
+    run: createRunState(),
     floorIndex: floorIndex || 0,
     floor: null,
     deathFreezeTicks: 0,
@@ -2354,6 +2402,12 @@ function createGameState(seed, floorIndex) {
 
 // THE ONLY PLACE THE FLOOR TIMER RESETS. Not on room exit, not on death,
 // not during a zoom transition (section 3.4).
+//
+// SECTION 4.1 [v1.2]: this function rebuilds FLOOR-SCOPED state only - geometry,
+// monsters, corpses, WARDENs, the room table, and the floor clock. IT MUST NOT
+// READ OR WRITE state.run. A write to state.run from here is the lives-refill
+// exploit returning under a different name; tests/floors.mjs snapshots run state
+// across a descent to catch it.
 function startFloor(state, floorIndex) {
   state.floorIndex = floorIndex;
   state.floor = createFloorRuntime(floorIndex, state.rng);
@@ -2372,6 +2426,15 @@ function updateGame(state, input) {
   // 1. The per-FLOOR intrusion clock. UNCONDITIONAL. Every phase, always.
   //    Do not wrap this in a condition. Do not move it below the dispatch.
   tickFloorTimer(state.floor);
+
+  // 1b. Respawn invulnerability. SECTION 4.1 [v1.2]: UNCONDITIONAL, for the
+  //     same structural reason as the clock above. It previously decremented
+  //     inside updateFloor and updateRoom only, so the 24 zoom ticks in each
+  //     direction plus the bonus phase cost nothing - PIP banked free
+  //     invulnerability by ducking into a room and straight back out. A counter
+  //     that any phase branch can skip will eventually be skipped by one.
+  //     Do not move this into a phase case.
+  tickPlayerInvuln(state.floor.player);
 
   // 2. Phase dispatch.
   switch (state.phase) {
@@ -2426,7 +2489,7 @@ function updateGame(state, input) {
     case GAME_PHASES.PLAYER_DEATH: {
       state.deathFreezeTicks--;
       if (state.deathFreezeTicks <= 0) {
-        if (state.floor.player.lives > 0) {
+        if (state.run.lives > 0) {
           respawnPlayerOnFloor(state.floor);
           transitionPhase(state, GAME_PHASES.FLOOR_VIEW);
         } else {
@@ -2495,7 +2558,7 @@ function leaveRoom(state) {
   // Section 2.4: treasure taken -> room PERMANENTLY sealed.
   if (state.room && state.room.treasureTaken) {
     state.floor.looted[state.room.id] = true;
-    state.score += state.floor.descriptor.treasureValue;
+    state.run.score += state.floor.descriptor.treasureValue;
   }
   state.room = null;
   // Back to the floor door PIP came in by, nudged clear so he does not
@@ -2527,8 +2590,9 @@ function leaveRoom(state) {
 // state, keep looted rooms looted. Those hooks do not exist yet because
 // corpses and rooms do not. The marker below is where they go.
 function applyPlayerDeath(state) {
-  const player = state.floor.player;
-  player.lives--;
+  // Section 4.1 [v1.2]: lives are RUN-scoped. Decrementing a floor-scoped copy
+  // is how the descent refill happened.
+  state.run.lives--;
 
   // SECTION 4.1, and the reason it exists. Skipping either half of this
   // softlocks the run: a corpse decaying in the ONLY doorway of an unlooted
@@ -2574,8 +2638,13 @@ function hashGameState(state) {
   const floor = state.floor;
   nums.push(floor.elapsedTicks, floor.descriptor.floorIndex);
 
+  // RUN-scoped (section 4.1 [v1.2]). lives STEERS: at zero, the death phase
+  // ends the run instead of respawning. Hashed here rather than with the
+  // player, because it is no longer a player field.
+  nums.push(state.run.lives, state.run.nextExtraLifeAt);
+
   const p = floor.player;
-  nums.push(p.x, p.y, p.facing, p.lives, p.invulnTicks);
+  nums.push(p.x, p.y, p.facing, p.invulnTicks);
 
   const a = floor.arrow;
   nums.push(a.alive ? 1 : 0, a.x, a.y, a.dir, a.windup, a.pending ? 1 : 0, a.id);
@@ -2619,7 +2688,7 @@ function hashGameState(state) {
     if (r.intruder) pushWardenState(nums, r.intruder);
   }
 
-  nums.push(state.score);
+  nums.push(state.run.score);
   // NOT included: prevX/prevY (render interpolation only), phaseTicks where it
   // is cosmetic, and anything derived rather than stored.
   return hashValues(0, nums);
@@ -3119,8 +3188,8 @@ function renderHud(gfx, state) {
   const left = Math.max(0, limit - elapsed);
 
   const line = 'FLOOR ' + (floor.descriptor.floorIndex + 1) +
-    '   LIVES ' + floor.player.lives +
-    '   SCORE ' + state.score +
+    '   LIVES ' + state.run.lives +
+    '   SCORE ' + state.run.score +
     '   CLOCK ' + left.toFixed(1);
   gfxDrawDebugText(gfx, line, HUD_MARGIN, HUD_MARGIN, PAL_HUD, HUD_TEXT_PX);
 

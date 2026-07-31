@@ -14,7 +14,7 @@
 import { TUNING, GAME_PHASES } from '../data/tuning.js';
 import { createRng, hashValues } from '../core/rng.js';
 import {
-  createFloorRuntime, tickFloorTimer, updateFloor,
+  createFloorRuntime, tickFloorTimer, tickPlayerInvuln, updateFloor,
   respawnPlayerOnFloor, floorElapsedSec, doorUnderPlayer,
   isStairsUnlocked, playerOnStairs
 } from './floor.js';
@@ -22,6 +22,32 @@ import {
   createRoomRuntime, updateRoom, roomEntryPosition, resetUnlootedRoom
 } from './room.js';
 import { ROOM_DEFS } from '../data/rooms.js';
+
+// SPEC 4.1 [v1.2]. THE RUN/FLOOR STATE SPLIT.
+//
+// Everything that must survive a descent lives in this object and nowhere else.
+// startFloor replaces state.floor wholesale, so any run-scoped counter kept
+// inside state.floor is silently reset on every descent - which is precisely
+// how `lives` came to refill from 1 back to 3 by walking down the stairs,
+// turning per-run game over into per-floor game over and deleting the risk
+// model the intrusion clock is built on.
+//
+// The split is enforced by construction, not by care: createPlayer no longer
+// HAS a lives field, so there is no floor-scoped place to put one.
+export function createRunState() {
+  return {
+    lives: TUNING.player.startingLives,
+    score: 0,
+    // Next score at which an extra life is awarded. The award itself is M8;
+    // the threshold is run-scoped whenever it lands, so it is sited here now
+    // rather than discovered on floor 2 later.
+    nextExtraLifeAt: TUNING.scoring.extraLifeEvery,
+    // Which input source last drove the game (section 17.1). Written at M11,
+    // when touch becomes a third source and the HUD needs to know which
+    // prompts to draw. Run-scoped: switching input source is not a floor event.
+    inputSource: null
+  };
+}
 
 export function createGameState(seed, floorIndex) {
   const rng = createRng(seed);
@@ -31,7 +57,8 @@ export function createGameState(seed, floorIndex) {
     tick: 0,
     phase: GAME_PHASES.FLOOR_VIEW,
     phaseTicks: 0,
-    score: 0,
+    // RUN-SCOPED. Never rebuilt by startFloor. See createRunState.
+    run: createRunState(),
     floorIndex: floorIndex || 0,
     floor: null,
     deathFreezeTicks: 0,
@@ -51,6 +78,12 @@ export function createGameState(seed, floorIndex) {
 
 // THE ONLY PLACE THE FLOOR TIMER RESETS. Not on room exit, not on death,
 // not during a zoom transition (section 3.4).
+//
+// SECTION 4.1 [v1.2]: this function rebuilds FLOOR-SCOPED state only - geometry,
+// monsters, corpses, WARDENs, the room table, and the floor clock. IT MUST NOT
+// READ OR WRITE state.run. A write to state.run from here is the lives-refill
+// exploit returning under a different name; tests/floors.mjs snapshots run state
+// across a descent to catch it.
 export function startFloor(state, floorIndex) {
   state.floorIndex = floorIndex;
   state.floor = createFloorRuntime(floorIndex, state.rng);
@@ -69,6 +102,15 @@ export function updateGame(state, input) {
   // 1. The per-FLOOR intrusion clock. UNCONDITIONAL. Every phase, always.
   //    Do not wrap this in a condition. Do not move it below the dispatch.
   tickFloorTimer(state.floor);
+
+  // 1b. Respawn invulnerability. SECTION 4.1 [v1.2]: UNCONDITIONAL, for the
+  //     same structural reason as the clock above. It previously decremented
+  //     inside updateFloor and updateRoom only, so the 24 zoom ticks in each
+  //     direction plus the bonus phase cost nothing - PIP banked free
+  //     invulnerability by ducking into a room and straight back out. A counter
+  //     that any phase branch can skip will eventually be skipped by one.
+  //     Do not move this into a phase case.
+  tickPlayerInvuln(state.floor.player);
 
   // 2. Phase dispatch.
   switch (state.phase) {
@@ -123,7 +165,7 @@ export function updateGame(state, input) {
     case GAME_PHASES.PLAYER_DEATH: {
       state.deathFreezeTicks--;
       if (state.deathFreezeTicks <= 0) {
-        if (state.floor.player.lives > 0) {
+        if (state.run.lives > 0) {
           respawnPlayerOnFloor(state.floor);
           transitionPhase(state, GAME_PHASES.FLOOR_VIEW);
         } else {
@@ -192,7 +234,7 @@ export function leaveRoom(state) {
   // Section 2.4: treasure taken -> room PERMANENTLY sealed.
   if (state.room && state.room.treasureTaken) {
     state.floor.looted[state.room.id] = true;
-    state.score += state.floor.descriptor.treasureValue;
+    state.run.score += state.floor.descriptor.treasureValue;
   }
   state.room = null;
   // Back to the floor door PIP came in by, nudged clear so he does not
@@ -224,8 +266,9 @@ export function leaveRoom(state) {
 // state, keep looted rooms looted. Those hooks do not exist yet because
 // corpses and rooms do not. The marker below is where they go.
 export function applyPlayerDeath(state) {
-  const player = state.floor.player;
-  player.lives--;
+  // Section 4.1 [v1.2]: lives are RUN-scoped. Decrementing a floor-scoped copy
+  // is how the descent refill happened.
+  state.run.lives--;
 
   // SECTION 4.1, and the reason it exists. Skipping either half of this
   // softlocks the run: a corpse decaying in the ONLY doorway of an unlooted
@@ -271,8 +314,13 @@ export function hashGameState(state) {
   const floor = state.floor;
   nums.push(floor.elapsedTicks, floor.descriptor.floorIndex);
 
+  // RUN-scoped (section 4.1 [v1.2]). lives STEERS: at zero, the death phase
+  // ends the run instead of respawning. Hashed here rather than with the
+  // player, because it is no longer a player field.
+  nums.push(state.run.lives, state.run.nextExtraLifeAt);
+
   const p = floor.player;
-  nums.push(p.x, p.y, p.facing, p.lives, p.invulnTicks);
+  nums.push(p.x, p.y, p.facing, p.invulnTicks);
 
   const a = floor.arrow;
   nums.push(a.alive ? 1 : 0, a.x, a.y, a.dir, a.windup, a.pending ? 1 : 0, a.id);
@@ -316,7 +364,7 @@ export function hashGameState(state) {
     if (r.intruder) pushWardenState(nums, r.intruder);
   }
 
-  nums.push(state.score);
+  nums.push(state.run.score);
   // NOT included: prevX/prevY (render interpolation only), phaseTicks where it
   // is cosmetic, and anything derived rather than stored.
   return hashValues(0, nums);

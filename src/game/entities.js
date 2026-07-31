@@ -24,11 +24,15 @@ export function createPlayer(tx, ty) {
     // PERSISTENT entity facing (section 17.1.1). NOT the input struct's
     // facingLatch, which is a one-tick event. Starts East.
     facing: 2,
-    lives: TUNING.player.startingLives,
     invulnTicks: 0,
     alive: true
   };
 }
+// NO `lives` FIELD HERE, DELIBERATELY (section 4.1 [v1.2]). This object is
+// FLOOR-SCOPED: createFloorRuntime builds a fresh one on every descent, so any
+// run-scoped counter stored here is silently reset by startFloor. That is
+// exactly how lives came to refill on every floor. Run-scoped state lives in
+// state.run and nowhere else.
 
 export function playerBox(player, inRoom) {
   const s = inRoom ? TUNING.player.hitboxRoom : TUNING.player.hitboxFloor;

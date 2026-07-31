@@ -1093,6 +1093,233 @@ shape as `src_test_dup/` at M1.
 
 ---
 
+## M5 exploit verification and fixes (2026-07-31)
+
+### Verification came first, and the probe was wrong before the findings were
+
+Both softlock-hunter findings were agent-cited and unverified when they were
+written down. Running the probe first was the right call twice over, because the
+**probe** turned out to be the thing that was broken.
+
+`scratchpad/verify5.mjs` reported finding 1 as **NOT REPRODUCED**. It was wrong.
+Line 15 read the loop bound out of the object the loop body was mutating:
+
+```js
+for (let i = 0; i < s.deathFreezeTicks + 2; i++) updateGame(s, N);
+```
+
+`updateGame` decrements `deathFreezeTicks` every tick during `PLAYER_DEATH`, so
+the condition converged on `i` at about half the freeze, the loop exited early,
+and PIP never respawned. The probe then teleported him to a hard-coded tile
+`(20,15)` — not the layout's actual stairwell — and read the phase as
+`PLAYER_DEATH`. That line of output was the tell: **the probe never reached the
+descent it claimed to have cleared.**
+
+Had the "not reproduced" been trusted, the most serious defect in the milestone
+would have been closed as a false alarm on the strength of a test that never ran
+the path. This is the *instrument before hypothesising* rule pointing at itself:
+a probe is evidence only once you have checked that it executed what you think
+it executed. **A green result from an unverified probe is worth less than no
+probe at all**, because it terminates the investigation.
+
+`scratchpad/verify5b.mjs` drives the phase machine on a predicate rather than a
+tick count, and locates the stairwell from `floor.layout.stairs`. Both findings
+then reproduced immediately.
+
+| Finding | Agent verdict | v1 probe | v2 probe | Truth |
+|---|---|---|---|---|
+| E1 lives refill on descent | CONFIRMED | not reproduced | `lives 1 -> 3` | **CONFIRMED** |
+| E2 invuln frozen in zoom | CONFIRMED | `0 of 24` consumed | `0 of 24` consumed | **CONFIRMED** |
+
+### M5-F1 — lives were FLOOR-scoped. Game over was per-floor, not per-run.
+
+`lives` was a field on the object returned by `createPlayer`. `createPlayer` is
+called by `createFloorRuntime`, and `startFloor` replaces `state.floor`
+wholesale. So descending the stairs rebuilt the player and reset lives to 3.
+
+Measured: two deaths on floor 1 leave 1 life; walking down the stairs returns 3.
+
+This is the worst defect found in the project so far, and not because of the
+line count. Lives are the only cost the game can impose. With them refilling per
+floor, dying is free, and if dying is free the intrusion clock — the entire
+scoring tension of §3.4 — imposes nothing. The mechanic was intact and the
+consequence was gone.
+
+**Fixed structurally, not at the symptom.** Patching `startFloor` to carry lives
+across would have left the next run-scoped value (score, the extra-life
+threshold, the M11 input-source tag) to rediscover the same defect. Instead
+§4.1 now splits the two scopes and SPEC.md v1.2 states it:
+
+| Scope | Contents | Lifetime |
+|---|---|---|
+| Run | `lives`, `score`, `nextExtraLifeAt`, `inputSource` | once per run; survives descent |
+| Floor | geometry, PIP position/facing/invuln, arrow, WARDENs, monsters, corpses, rooms, looted flags, the clock | rebuilt by `startFloor` |
+
+`createPlayer` **no longer has a `lives` field at all**. That is the point: there
+is no floor-scoped place to put a run-scoped counter, so the defect cannot
+return by the same route. `state.run` is the only home for run state, and
+`startFloor` neither reads nor writes it.
+
+`state.score` moved to `state.run.score` in the same change. It was already
+outside `state.floor` and was never broken — but leaving it separate would have
+meant the boundary was a convention rather than an object, and a convention is
+what failed here.
+
+### M5-F2 — respawn invulnerability froze during both zooms
+
+`invulnTicks` was decremented inside `updateFloor` and `updateRoom` only.
+`ROOM_ZOOM_IN`, `ROOM_ZOOM_OUT`, `FLOOR_CLEAR_BONUS` and `PLAYER_DEATH` are
+separate phase branches, so none of them consumed it. Measured: **0 of 24 zoom
+ticks**. Stepping into a room and straight back out banked 48 free ticks of
+invulnerability, repeatable.
+
+Fixed by moving the decrement to `tickPlayerInvuln`, called unconditionally from
+`updateGame` above the phase dispatch — the same site and the same rule as
+`tickFloorTimer`. The phase handlers now READ `invulnTicks` and never write it.
+
+**One deliberate behaviour change, flagged rather than hidden.** The decrement
+now runs *before* the dispatch that reads it, so effective immunity is 119 ticks
+rather than 120 — one tick, 16 ms, on a 2 s window. Moving the call to the
+bottom of `updateGame` would preserve 120 exactly while keeping every
+structural property (one site, no phase branch, unskippable). It is sited at the
+top because that is where the instruction put it and where its sibling lives.
+**Raise it if the 16 ms matters; it is a one-line move.**
+
+Audit of the other per-tick counters, since the same shape could hide anywhere:
+
+| Counter | Location | Verdict |
+|---|---|---|
+| `floor.elapsedTicks` | `floor.js` `tickFloorTimer`, called above dispatch | correct, unconditional |
+| `player.invulnTicks` | `floor.js` `tickPlayerInvuln`, called above dispatch | **fixed this milestone** |
+| `state.deathFreezeTicks` | `state.js`, inside the `PLAYER_DEATH` case | correct — it is that phase's own counter and is meaningless outside it |
+| `state.zoomTicks` | `state.js`, inside both zoom cases | correct — same reasoning |
+| `state.phaseTicks` | `state.js`, above dispatch | correct, unconditional |
+| `room.ticks` (barriers, hazards) | `room.js` `updateRoom` | **intended** — barriers and hazards are room-local and must freeze while PIP is not in the room, or a hazard would advance unobserved and kill on re-entry |
+| `corpse.phaseTicks` (decay) | `entities.js`, driven from `updateRoom` | **intended**, same reasoning: corpses are room-local terrain |
+| `warden.checkTicks` / `slideTicks` | `entities.js`, driven from `updateFloor` | **intended** — unstick state is only meaningful while the WARDEN is being stepped |
+
+Only `invulnTicks` was wrong. The room-local counters are deliberately
+phase-gated and stay that way; noted here so a future reviewer does not "fix"
+them into a hazard that advances while nobody is watching.
+
+### M5-F3 — the §3.11 dodge test was a TAUTOLOGY, not a weak test
+
+```js
+const expected = TUNING.dodgeSkill[tier];   // the constant under test
+assert(..., Math.abs(observed - expected) <= TOLERANCE);
+```
+
+`monsterDodgeCheck` reads the same constant. Both sides of the comparison moved
+together, so the assertion held for **every possible value**. The M5 mutation
+audit confirmed it: zeroing all three tiers was caught by nothing.
+
+This is a different failure from M4's no-teeth tests. Those measured the wrong
+quantity — they were about something, just not the thing. This one carried zero
+information and had reported green since M3, reading as coverage in every
+checkpoint report since.
+
+Fixed by hard-coding the labels in `tests/rooms.mjs`:
+
+```js
+const DODGE_LABEL = { LOW: 0.15, MED: 0.45, HIGH: 0.80 };
+const DIAGONAL_DODGE_MUL = 0.5;
+```
+
+plus literal-valued guards on the constants themselves, the same shape as
+`timer.mjs`'s flag checks. Retuning a tier now fails the suite and names the
+constant, forcing a deliberate edit in two places.
+
+**Sweep of every suite for the same shape: exactly TWO instances, both fixed.**
+`rooms.mjs:719` (the dodge-rate test) and `rooms.mjs:996` (effective dodge
+across room geometry) — both read `TUNING.dodgeSkill[tier]` as their expected
+value. Everything else that imports `TUNING` uses it as *setup* — tile size,
+grid dimensions, hitbox sizes, `dt`, zoom duration, sampling positions on the
+intrusion ramp — which is legitimate: the constant positions the input, it is
+not the expected output. `timer.mjs:40-42` was already correct and was the model
+for the fix.
+
+### M5-F4 — §3.9 and §3.10 now have headless tests
+
+Both were verified in a browser at M3 and had no automated coverage.
+
+**§3.9 facing decoupled from movement.** Four arms: input into a wall latches
+facing with provably zero displacement; unblocked input changes both; neutral
+input preserves facing; and `facingLatch` with `dir` NEUTRAL refaces without
+moving — the tap-to-reface case §17.4 depends on. The wall cell is *searched
+for* rather than hard-coded, so a room edit cannot silently slide the test off
+its wall.
+
+Wrote the assertion wrong first: pinned the perpendicular axis to its start
+value, which doorway snap-assist legitimately nudges. Relaxed to the along-axis
+displacement. Recording it because the failure looked like a facing bug and was
+a test bug.
+
+**§3.10 diagonals beat cardinals.** Measures dodge rate against a NW shot versus
+a W shot at HIGH tier: **0.792 cardinal, 0.405 diagonal**, against literal
+expectations of 0.80 and 0.40. Asserts all three of: cardinal matches its label,
+diagonal matches label × mul, and diagonal is strictly below cardinal.
+
+### All nine M5 mutations were shown to FAIL
+
+Per the standing rule. Every test added or repaired this milestone was run
+against the defect it guards:
+
+| Mutation | Caught by |
+|---|---|
+| lives refill on descent (the exploit) | `floors` |
+| `lives` restored to the floor-scoped player | `floors`, `statehash` |
+| score reset on descent | `floors` |
+| invuln decrement returned to the phase handlers | `rooms` |
+| facing latch moved below the movement guard | `rooms` |
+| diagonal multiplier removed | `rooms` |
+| diagonal multiplier retuned 0.5 → 0.9 | `rooms` |
+| all dodge tiers zeroed | `rooms` |
+| one tier retuned 0.45 → 0.50 | `rooms` |
+
+The last two are the ones that previously escaped. §3.11 now has teeth.
+
+### M5-F5 — the M4 descent test was STRUCTURALLY BLIND, and it is not alone
+
+`tests/floors.mjs` "seal all four rooms, unlock the stairs, descend" sets
+`p.invulnTicks = 1e9` so PIP survives the walk to the stairwell. That makes it
+**incapable of reaching a state where lives are not 3**, so it could never have
+observed the descent refill no matter how long it ran. It is the test that most
+looked like it covered the defect.
+
+Audit of every suite for setup that disables a mechanic. The bar is not "does it
+disable something" — most of these are legitimate — but "is the disabled
+mechanic the thing this test claims to cover".
+
+| Site | Disables | Verdict |
+|---|---|---|
+| `floors.mjs:369-372` M4 descent | death | **BLIND.** Covers the descent path; lives are descent state |
+| `rooms.mjs:893-896` sealing survives a death | contact death | **BORDERLINE.** Drives death via `applyPlayerDeath` directly, so it cannot see the real death path ceasing to call it. Covered elsewhere by `timer.mjs` |
+| `floors.mjs:502-527` new run-state test (mine) | contact death | **BORDERLINE**, same shape — deaths are synthetic, though lives are then observed for real |
+| `rooms.mjs:71-77` `emptyRoomState` helper | wardens, monsters, death | fine. Movement/dodge tests; every death test using it re-enables with `invulnTicks = 0` |
+| `rooms.mjs:353-356` one-arrow across views | wardens, death | fine. Covers arrow count |
+| `floors.mjs:283` doorway matrix | wardens | fine. Covers passability |
+| `timer.mjs:120` clock across zooms | wardens | fine. Covers the clock |
+
+**Not fixed now, per instruction — listed for the checkpoint.** The M4 descent
+test is the one worth repairing: the fix is to let PIP take real damage on the
+way to the stairs, or to run it a second time from a reduced-lives start. The
+two borderline entries are a known gap in the *death-trigger* path, not the
+death-handling path, and `timer.mjs` covers the trigger.
+
+### Still open
+
+- **H1 tab backgrounding** — needs a real browser; procedure handed over, result
+  pending. If real, the fix belongs in the `visibilitychange` handler M1 built.
+- **`run.inputSource`** is unclassified in `statehash.mjs`. It is `null` today so
+  the walker skips it. Verified deliberately: setting it to a string makes
+  `statehash` FAIL until someone classifies it. That is the guard working, and
+  M11 will hit it the moment touch writes the field. Left unclassified on
+  purpose rather than pre-excluded.
+- **`nextExtraLifeAt` is never advanced.** The threshold is sited and hashed;
+  awarding the life is M8, per §14.
+
+---
+
 ## Withdrawn reviewer findings
 
 Tracked per CLAUDE.md: if the withdrawal rate stays high, the agent file needs

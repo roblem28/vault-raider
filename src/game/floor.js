@@ -55,6 +55,19 @@ export function tickFloorTimer(floor) {
   floor.elapsedTicks++;
 }
 
+// SPEC 4.1 [v1.2]. Sited HERE, beside tickFloorTimer, because it carries the
+// identical rule: updateGame calls it once per tick above the phase dispatch,
+// on every phase, with no condition. It is a player field rather than a floor
+// field, but it is a per-tick counter that no phase may skip, and that is what
+// decides where it lives.
+//
+// Was previously decremented inside updateFloor and updateRoom, which meant
+// zoom transitions, the floor-clear bonus and the death freeze all ran for
+// free - measured at 0 of 24 zoom ticks consumed.
+export function tickPlayerInvuln(player) {
+  if (player.invulnTicks > 0) player.invulnTicks--;
+}
+
 export function floorElapsedSec(floor) {
   return floor.elapsedTicks * TUNING.dt;
 }
@@ -78,9 +91,11 @@ export function updateFloor(floor, input) {
     updateWarden(warden, floor.player, floor.mask, elapsed, speedMul, floor.rng);
   }
 
-  // Contact kills unless PIP is in respawn invulnerability.
+  // Contact kills unless PIP is in respawn invulnerability. READ ONLY - the
+  // decrement is tickPlayerInvuln, called unconditionally from updateGame
+  // (section 4.1 [v1.2]). Do not decrement here; that is what let the zoom
+  // phases hand out free invulnerability.
   if (floor.player.invulnTicks > 0) {
-    floor.player.invulnTicks--;
     return { death: false };
   }
   for (const warden of floor.wardens) {

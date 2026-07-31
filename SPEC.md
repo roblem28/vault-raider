@@ -1,7 +1,7 @@
-# VAULT RAIDER — Game Spec v1.1
+# VAULT RAIDER — Game Spec v1.2
 **An arcade dungeon crawler in the tradition of Venture (Exidy 1981 /
 ColecoVision 1982)** — nominative reference, see §0.1
-Date: 2026-07-31 · Owner: Box of Rox LLC · Supersedes v1.0
+Date: 2026-07-31 · Owner: Box of Rox LLC · Supersedes v1.1
 
 Changes from v0.1 are marked **[v0.2]**. Changes from v0.2 are marked **[v0.3]**
 (build output naming, deployment §16). Changes from v0.3 are marked **[v0.4]**
@@ -39,6 +39,13 @@ questions it left open are now ruled: a blocked dodge sidestep retries the
 opposite direction (§4.4), the intrusion siren sounds in floor view as well as
 room view (§10), and the four unread `corpse` flags are deleted from §6 because
 §3.5 and §4.1 hard-spec that behaviour.
+Changes from v1.1 are marked **[v1.2]** — the two exploits M5's adversarial pass
+found, both fixed structurally rather than at the symptom: §4.1 now splits
+**RUN-scoped state from FLOOR-scoped state** (`lives` was a field on the
+floor-rebuilt player object, so descending the stairs refilled it and made game
+over per-floor instead of per-run), and respawn invulnerability decrements
+**unconditionally above the phase dispatch** (it was skipped by both zoom
+transitions, measured at 0 of 24 ticks consumed).
 
 ---
 
@@ -203,7 +210,7 @@ Cut any of these and it stops being a clone of the original.
 | Speed | `1.10 × floorSpeedMul` px/tick | `1.00 × floorSpeedMul` px/tick |
 | Can fire | **[v0.2]** Yes — no effect on WARDENs | Yes, 1 arrow max |
 | Dies on | WARDEN | monster, corpse, WARDEN, hazard |
-| Lives | 3 start; +1 per `extraLifeEvery` points | |
+| Lives | **[v1.2]** 3 start; +1 per `extraLifeEvery` points. **RUN-scoped** — see below | |
 
 **[v0.4] Hitbox corrected from 8×8 to 6×6.** v0.2 specified an 8×8 hitbox. Tiles
 are 8 px, so a 1-tile corridor is exactly 8 px wide and an 8×8 hitbox fits with
@@ -250,6 +257,37 @@ identically so it cannot desync a replay.
 - **Clear all corpses on the floor.** Reset all **unlooted** rooms to their entry spawn state.
 - **Looted rooms stay looted.** Score and any in-room WARDEN are cleared.
 - Rationale: without the corpse clear, a corpse decaying in the only doorway of an unlooted room makes the stairs permanently unreachable — an unwinnable run. This was a v0.1 softlock.
+
+**[v1.2] RUN-scoped state and FLOOR-scoped state are separate objects.** Found
+at M5: `lives` was a field on the player object, the player object is built by
+`createFloorRuntime`, and starting a floor replaces the floor runtime wholesale
+— so descending the stairs reset lives to 3. Game over was **per-floor, not
+per-run**. Nothing punished dying, which removes the only cost the intrusion
+clock can impose and deletes the risk model §3.4 exists to create.
+
+| Scope | Contents | Lifetime |
+|---|---|---|
+| **Run** | `lives`, `score`, next extra-life threshold, active input source | Created once per run. Survives death, room entry and exit, and **descent**. |
+| **Floor** | geometry and mask, PIP's position/facing/invulnerability, arrow, WARDENs, monsters, corpses, room runtimes, looted flags, the intrusion clock | Rebuilt by `startFloor` on every descent. |
+
+Two rules follow, and both are mechanical rather than advisory:
+
+1. **`startFloor` must not read or write run state.** It rebuilds floor state and
+   resets the intrusion clock (§3.4's single permitted reset) and does nothing
+   else.
+2. **No run-scoped value may be stored on a floor-scoped object.** Enforced by
+   construction: the player object has no `lives` field to reset. A run-scoped
+   counter added to the player, the floor runtime, or a room runtime is the same
+   defect under a new name.
+
+**[v1.2] Respawn invulnerability decrements once per tick, on every phase.**
+Also found at M5: `invulnTicks` was decremented only inside the floor-view and
+room-view handlers, so both 24-tick zoom transitions and the floor-clear bonus
+cost nothing — measured at **0 of 24 zoom ticks consumed**. PIP could bank
+invulnerability by stepping into a room and straight back out. The decrement
+belongs beside the intrusion clock, above the phase dispatch, unconditionally,
+and for the same reason: a counter any phase branch can skip will eventually be
+skipped by one. This is a **read-only** value inside the phase handlers.
 
 ### 4.2 Arrow
 

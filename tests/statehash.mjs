@@ -161,7 +161,7 @@ function richState() {
   state.floorReturn = { x: 10, y: 20 };
   state.deathFreezeTicks = 3;
   state.zoomTicks = 5;
-  state.score = 400;
+  state.run.score = 400;
   updateGame(state, { dir: -1, facingLatch: -1, fire: false });
   return state;
 }

@@ -12,7 +12,7 @@
 
 import { TUNING, TILE_CHARS, GAME_PHASES } from '../src/data/tuning.js';
 import { FLOOR_LAYOUTS, floorDescriptorFor } from '../src/data/floors.js';
-import { createGameState, updateGame } from '../src/game/state.js';
+import { createGameState, updateGame, applyPlayerDeath } from '../src/game/state.js';
 import { isStairsUnlocked, playerOnStairs } from '../src/game/floor.js';
 import { ROOM_DEFS } from '../src/data/rooms.js';
 import { advanceAccumulator } from '../src/core/loop.js';
@@ -346,9 +346,9 @@ console.log('\n# no barrier grants PERMANENT immunity (section 4.3.1)');
       const state = createGameState(seed, layout.layoutIndex);
       let caught = -1;
       for (let i = 0; i < LIMIT_TICKS; i++) {
-        const lives = state.floor.player.lives;
+        const lives = state.run.lives;
         updateGame(state, NEUTRAL);
-        if (state.floor.player.lives < lives) { caught = i; break; }
+        if (state.run.lives < lives) { caught = i; break; }
       }
       if (caught < 0) never.push(seed.toString(16));
       else worst = Math.max(worst, caught);
@@ -481,6 +481,80 @@ console.log('\n# floor descriptor indexing (section 2.1)');
   const treasures = [0, 3, 6].map((i) => floorDescriptorFor(i, TUNING).treasureValue);
   assert('treasure is 400 on floors 1, 4 and 7', treasures.join(',') === '400,400,400',
     treasures.join(','));
+}
+
+console.log('\n# SECTION 4.1 [v1.2]: RUN state survives a descent, FLOOR state does not');
+{
+  // M5 EXPLOIT 1, and the most serious defect found in the milestone. `lives`
+  // was a field on the player object, the player object is built by
+  // createFloorRuntime, and startFloor replaces the whole floor runtime - so
+  // walking down the stairs reset lives to 3. Game over was per-FLOOR, not
+  // per-RUN. Nothing punished dying, so the intrusion clock stopped mattering.
+  //
+  // Not caught earlier because the M4 descent test sets invulnTicks to 1e9 to
+  // reach the stairs alive, which makes it structurally incapable of observing
+  // a lives bug. See docs/NOTES.md.
+  //
+  // Mutation-verified: putting `lives: TUNING.player.startingLives` back on
+  // createPlayer and reading it from there fails the first assertion below.
+  const NEUTRAL = { dir: -1, facingLatch: -1, fire: false };
+  const state = createGameState(0x5171, 0);
+  state.floor.wardens.length = 0;
+
+  // Lose two of three lives on floor 1.
+  for (let d = 0; d < 2; d++) {
+    applyPlayerDeath(state);
+    let guard = 0;
+    while (state.phase !== GAME_PHASES.FLOOR_VIEW && guard++ < 600) {
+      updateGame(state, NEUTRAL);
+    }
+  }
+  check('two deaths leave one life', state.run.lives, 1);
+
+  // Bank some score and move the extra-life threshold, so this covers all of
+  // run state and not just the field that broke.
+  state.run.score = 1234;
+  state.run.nextExtraLifeAt = 40000;
+
+  // Clear the floor and take the stairs.
+  for (const room of state.floor.layout.rooms) state.floor.looted[room.id] = true;
+  const size = TUNING.player.hitboxFloor;
+  const stairs = state.floor.layout.stairs;
+  const p = state.floor.player;
+  p.x = stairs.tx * TUNING.tile + (TUNING.tile - size) / 2;
+  p.y = stairs.ty * TUNING.tile + (TUNING.tile - size) / 2;
+  p.prevX = p.x; p.prevY = p.y;
+  p.invulnTicks = 1e9;
+
+  const timerBefore = state.floor.elapsedTicks;
+  let guard = 0;
+  while (state.floorIndex === 0 && guard++ < 600) updateGame(state, NEUTRAL);
+  check('the stairs advanced the floor', state.floorIndex, 1);
+
+  // RUN-scoped: must survive.
+  check('lives SURVIVE the descent', state.run.lives, 1);
+  check('score SURVIVES the descent', state.run.score, 1234);
+  check('the extra-life threshold SURVIVES the descent', state.run.nextExtraLifeAt, 40000);
+
+  // FLOOR-scoped: must be rebuilt. The clock resetting here is correct and is
+  // the one reset section 3.4 allows - startFloor and nowhere else.
+  assert('the floor clock DID reset on the new floor',
+    state.floor.elapsedTicks < timerBefore,
+    `was ${timerBefore}, now ${state.floor.elapsedTicks}`);
+  check('the new floor has no looted rooms', Object.keys(state.floor.looted).length, 0);
+
+  // And the structural guarantee, not just the symptom: the floor-scoped player
+  // has no lives field at all, so there is nowhere for this bug to come back.
+  assert('createPlayer exposes NO lives field to be reset',
+    state.floor.player.lives === undefined,
+    `player.lives is ${state.floor.player.lives}`);
+
+  // Run out the last life: game over is per-RUN.
+  applyPlayerDeath(state);
+  guard = 0;
+  while (state.phase !== GAME_PHASES.GAME_OVER && guard++ < 600) updateGame(state, NEUTRAL);
+  check('losing the last life on floor 2 ends the RUN', state.phase, GAME_PHASES.GAME_OVER);
+  assert('gameOver is set', state.gameOver === true);
 }
 
 console.log(`\n${failures === 0 ? 'PASS' : 'FAIL'} tests/floors.mjs`);

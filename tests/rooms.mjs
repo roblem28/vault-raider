@@ -12,10 +12,10 @@
 //
 // Zero dependencies. Node only, no DOM.
 
-import { TUNING, TILE_CHARS, GAME_PHASES } from '../src/data/tuning.js';
+import { TUNING, TILE_CHARS, GAME_PHASES, DIRS } from '../src/data/tuning.js';
 import { ROOM_DEFS } from '../src/data/rooms.js';
 import {
-  createGameState, updateGame, hashGameState, applyPlayerDeath
+  createGameState, updateGame, hashGameState, applyPlayerDeath, beginRoomZoomOut
 } from '../src/game/state.js';
 import {
   createRoomRuntime, playerOnSafeTile, intrusionWarningLevel, resetUnlootedRoom
@@ -23,7 +23,7 @@ import {
 import { isStairsUnlocked as isStairsUnlockedRooms } from '../src/game/floor.js';
 import {
   createCorpse, createMonster, shootCorpse, createWarden, updateWarden, monsterDodgeCheck,
-  updateMonster, MONSTER_BEHAVIOUR, hazardBox, hazardOffsetTiles
+  updateMonster, MONSTER_BEHAVIOUR, hazardBox, hazardOffsetTiles, updatePlayerRoom
 } from '../src/game/entities.js';
 import { advanceAccumulator } from '../src/core/loop.js';
 import { createRng } from '../src/core/rng.js';
@@ -31,6 +31,21 @@ import { boxHitsTiles } from '../src/game/collision.js';
 
 // Section 4.4: a BOUNCER travels on diagonals only.
 const DIRS_DIAGONAL = new Set([1, 3, 5, 7]);
+
+// SECTION 3.11 / 3.10. THESE LITERALS ARE DELIBERATELY NOT IMPORTED.
+//
+// Until M5 the dodge-rate assertions read their expected value out of
+// TUNING.dodgeSkill - the same constant monsterDodgeCheck reads. Both sides of
+// the comparison moved together, so the test could not fail for any value of
+// the constant: set dodgeSkill.HIGH to 0.0 and the suite still went green while
+// the mechanic was gone. It reported as coverage from M3 to M5 and carried
+// zero information. (Confirmed by the M5 mutation audit: zeroing all three
+// tiers was caught by nothing.)
+//
+// Duplicating the numbers here is the point. Changing a dodge constant must
+// break this file, forcing a deliberate edit rather than a silent drift.
+const DODGE_LABEL = { LOW: 0.15, MED: 0.45, HIGH: 0.80 };
+const DIAGONAL_DODGE_MUL = 0.5;
 
 let failures = 0;
 
@@ -258,9 +273,9 @@ console.log('\n# corpses: BLOCKING is tile-occupancy, LETHALITY is AABB (section
   state.room.corpses.push(createCorpse(16 * T, 21 * T));
   p.x = 16 * T + 1;
   p.y = 21 * T + 1;
-  const lives = p.lives;
+  const lives = state.run.lives;
   updateGame(state, { dir: -1, facingLatch: -1, fire: false });
-  assert('a corpse overlapping PIP kills him', p.lives === lives - 1);
+  assert('a corpse overlapping PIP kills him', state.run.lives === lives - 1);
 }
 
 console.log('\n# THE DOORWAY SEAL, both halves (section 3.5 -> 4.1)');
@@ -274,9 +289,9 @@ console.log('\n# THE DOORWAY SEAL, both halves (section 3.5 -> 4.1)');
   state.room.corpses.push(createCorpse(10 * T, 2 * T));
   p.x = 10 * T + 1;
   p.y = 2 * T + 1;
-  const lives = p.lives;
+  const lives = state.run.lives;
   updateGame(state, { dir: -1, facingLatch: -1, fire: false });
-  assert('a corpse in the doorway can trap and kill PIP', p.lives === lives - 1);
+  assert('a corpse in the doorway can trap and kill PIP', state.run.lives === lives - 1);
 
   // Half two: that death must CLEAR the corpses and RESET the unlooted room,
   // or the run is softlocked - the stairs become permanently unreachable.
@@ -319,9 +334,9 @@ console.log('\n# safe tile (section 3.7)');
 
   // Camping is INTENDED, not an exploit: park a corpse on top and survive.
   state.room.corpses.push(createCorpse(tr.tx * T, tr.ty * T));
-  const lives = p.lives;
+  const lives = state.run.lives;
   for (let i = 0; i < 60; i++) updateGame(state, { dir: -1, facingLatch: -1, fire: false });
-  check('camping the safe tile is genuinely unkillable', p.lives, lives);
+  check('camping the safe tile is genuinely unkillable', state.run.lives, lives);
 }
 
 console.log('\n# ONE arrow across a ZOOM, both directions (section 3.8)');
@@ -423,9 +438,9 @@ console.log('\n# CRAWLER behaviour (section 4.4)');
   // Somewhere that is NOT the safe tile.
   p.x = room.monsters[0].x;
   p.y = room.monsters[0].y;
-  const lives = p.lives;
+  const lives = state.run.lives;
   updateGame(state, { dir: -1, facingLatch: -1, fire: false });
-  check('a CRAWLER contact-kills PIP', p.lives, lives - 1);
+  check('a CRAWLER contact-kills PIP', state.run.lives, lives - 1);
 }
 
 console.log('\n# arrow vs monster: hit, kill, corpse (sections 3.8, 3.5)');
@@ -549,9 +564,9 @@ console.log('\n# WARDEN INTRUSION - the other half of M3 (section 3.3)');
   p.invulnTicks = 0;
   p.x = room.intruder.x;
   p.y = room.intruder.y;
-  const lives = p.lives;
+  const lives = state.run.lives;
   updateGame(state, { dir: -1, facingLatch: -1, fire: false });
-  check('the intruding WARDEN kills PIP on contact', p.lives, lives - 1);
+  check('the intruding WARDEN kills PIP on contact', state.run.lives, lives - 1);
 }
 
 console.log('\n# corpse hatch legibility at EVERY decay phase (section 11)');
@@ -716,7 +731,7 @@ console.log('\n# dodge rate MATCHES ITS LABEL at every tier (section 4.4 [v0.9])
       // never roll again, whichever way the first went.
       if (monsterDodgeCheck(m, arrow, state.rng, ROOM_DEFS.coil.tiles) !== false) doubleRolled++;
     }
-    const expected = TUNING.dodgeSkill[tier];
+    const expected = DODGE_LABEL[tier];
     const observed = dodges / TRIALS;
     console.log(`     ${tier.padEnd(4)} label ${expected.toFixed(2)}  observed ${observed.toFixed(3)}  (${dodges}/${TRIALS})`);
     assert(`${tier}: never rolls twice for the same arrow`, doubleRolled === 0,
@@ -774,9 +789,9 @@ console.log('\n# SLIDING_BARRIER hazards (section 4.5) — THE SLABS has no othe
     const box = hazardBox(h, state.room.ticks + 1);
     p.x = box.x + 1;
     p.y = box.y + 1;
-    const lives = p.lives;
+    const lives = state.run.lives;
     updateGame(state, { dir: -1, facingLatch: -1, fire: false });
-    check('standing in a barrier kills PIP', p.lives, lives - 1);
+    check('standing in a barrier kills PIP', state.run.lives, lives - 1);
   }
 
   // 2. Standing clear does NOT kill - or the room would be unwinnable.
@@ -786,9 +801,9 @@ console.log('\n# SLIDING_BARRIER hazards (section 4.5) — THE SLABS has no othe
     p.invulnTicks = 0;
     p.x = def.treasure.tx * T + 1;
     p.y = def.treasure.ty * T + 1;
-    const lives = p.lives;
+    const lives = state.run.lives;
     for (let i = 0; i < 400; i++) updateGame(state, { dir: -1, facingLatch: -1, fire: false });
-    check('the treasure tile is never swept by a barrier', p.lives, lives);
+    check('the treasure tile is never swept by a barrier', state.run.lives, lives);
   }
 
   // 3. The sweep actually sweeps, stays inside its travel, and is a pure
@@ -993,7 +1008,7 @@ console.log('\n# EFFECTIVE dodge across room geometry (section 4.4 [v1.0])');
         if (monsterDodgeCheck(m, arrow, rng, sh.tiles)) dodged++;
       }
       const rate = dodged / TRIALS;
-      const label = TUNING.dodgeSkill[tier];
+      const label = DODGE_LABEL[tier];
       console.log(`     ${sh.name.padEnd(20)} ${tier.padEnd(4)} ${rate.toFixed(3)}  (label ${label})`);
       if (sh.expectLabel) {
         assert(`${sh.name} / ${tier}: effective dodge matches the label`,
@@ -1030,6 +1045,213 @@ console.log('\n# dodge consumes RNG deterministically (sections 3.10, 4.4, 12.1.
   }
   check('the same seed produces the same post-combat hash', dodgeRun(0xD0D6), dodgeRun(0xD0D6));
   assert('a different seed diverges', dodgeRun(0xD0D6) !== dodgeRun(0xD0D7));
+}
+
+console.log('\n# the tuning constants the dodge tests hard-code (sections 3.10, 3.11)');
+{
+  // Asserted against LITERALS, the same shape as timer.mjs's flag guards. This
+  // is the crisp half of the de-tautologised dodge test: if someone retunes a
+  // tier, this fails first and names the constant, instead of the statistical
+  // assertion failing 2000 trials later with a vaguer message.
+  check('dodgeSkill.LOW is 0.15', TUNING.dodgeSkill.LOW, 0.15);
+  check('dodgeSkill.MED is 0.45', TUNING.dodgeSkill.MED, 0.45);
+  check('dodgeSkill.HIGH is 0.80', TUNING.dodgeSkill.HIGH, 0.80);
+  check('diagonalDodgeMul is 0.5', TUNING.monster.diagonalDodgeMul, 0.5);
+}
+
+console.log('\n# SECTION 3.9: facing latches on INPUT, never on displacement');
+{
+  // The mechanic M1 was structured around and the one M11's tap-to-reface
+  // depends on. Verified in a browser at M3, never headless until now: the M5
+  // mutation audit moved the facing assignment below the movement guard and
+  // NOTHING caught it.
+  //
+  // Find an open cell walled to the North and West with an open cell East, so
+  // the same position gives a blocked axis and a free axis. Searched rather
+  // than hard-coded so a room edit cannot silently move the test off its wall.
+  const tiles = ROOM_DEFS.coil.tiles;
+  let cell = null;
+  for (let ty = 1; ty < tiles.length && !cell; ty++) {
+    for (let tx = 1; tx < tiles[ty].length - 1; tx++) {
+      if (isFloor(tiles, tx, ty) && !isFloor(tiles, tx, ty - 1) &&
+          !isFloor(tiles, tx - 1, ty) && isFloor(tiles, tx + 1, ty)) {
+        cell = { tx, ty }; break;
+      }
+    }
+  }
+  assert('found a corner cell to test facing against', cell !== null);
+
+  const T = TUNING.tile;
+  const place = (state) => {
+    const p = state.floor.player;
+    p.x = cell.tx * T; p.y = cell.ty * T;
+    p.prevX = p.x; p.prevY = p.y;
+    p.facing = 2;                       // East, so a latch to West is a change
+    return p;
+  };
+
+  // 1. Input INTO a wall: facing changes, displacement is zero.
+  {
+    const state = emptyRoomState('coil', 0xFACE);
+    const p = place(state);
+    updatePlayerRoom(p, { dir: 6, facingLatch: 6, fire: false }, tiles, 1, null);
+    check('blocked West input still latches facing West', p.facing, 6);
+    assert('blocked West input produced ZERO displacement',
+      p.x === cell.tx * T && p.y === cell.ty * T,
+      `moved to ${p.x},${p.y} from ${cell.tx * T},${cell.ty * T}`);
+  }
+  {
+    const state = emptyRoomState('coil', 0xFACE);
+    const p = place(state);
+    updatePlayerRoom(p, { dir: 0, facingLatch: 0, fire: false }, tiles, 1, null);
+    check('blocked North input still latches facing North', p.facing, 0);
+    assert('blocked North input produced ZERO displacement',
+      p.x === cell.tx * T && p.y === cell.ty * T);
+  }
+
+  // 2. Input that DOES move: facing and position both change.
+  {
+    const state = emptyRoomState('coil', 0xFACE);
+    const p = place(state);
+    const y0 = p.y;
+    // East, the one direction the cell search proved open. South was NOT
+    // searched for and is wall in THE COIL - asserting on it failed here first.
+    //
+    // Asserts the ALONG-axis displacement only. Doorway snap-assist (section
+    // 4.1) legitimately nudges the perpendicular axis, and pinning y === y0
+    // failed here for that reason, not because facing was wrong.
+    updatePlayerRoom(p, { dir: 2, facingLatch: 2, fire: false }, tiles, 1, null);
+    check('unblocked input latches facing East', p.facing, 2);
+    assert('unblocked input also moved PIP east', p.x > cell.tx * T,
+      `moved to ${p.x},${p.y} from ${cell.tx * T},${y0}`);
+  }
+
+  // 3. Neutral input PRESERVES facing - it is not a reset.
+  {
+    const state = emptyRoomState('coil', 0xFACE);
+    const p = place(state);
+    p.facing = 6;
+    updatePlayerRoom(p, { dir: -1, facingLatch: -1, fire: false }, tiles, 1, null);
+    check('neutral input preserves facing', p.facing, 6);
+  }
+
+  // 4. THE DEFECT ITSELF: facing latched with NO dir at all. Tap-to-reface
+  //    (section 17.4) sends exactly this, and deriving facing from realized
+  //    displacement makes it a no-op.
+  {
+    const state = emptyRoomState('coil', 0xFACE);
+    const p = place(state);
+    const x0 = p.x, y0 = p.y;
+    updatePlayerRoom(p, { dir: -1, facingLatch: 4, fire: false }, tiles, 1, null);
+    check('facingLatch with dir NEUTRAL still refaces', p.facing, 4);
+    assert('refacing without dir does not move PIP', p.x === x0 && p.y === y0);
+  }
+}
+
+console.log('\n# SECTION 3.10: a diagonal shot is harder to dodge than a cardinal');
+{
+  // Expected value is DODGE_LABEL * DIAGONAL_DODGE_MUL, both literals in this
+  // file. Never TUNING.monster.diagonalDodgeMul - that is the constant under
+  // test, and reading it here would rebuild the tautology this replaced.
+  const TRIALS = 4000;
+  const TOLERANCE = 0.03;
+  const tier = 'HIGH';                  // widest gap, so the effect is clearest
+
+  function rate(dir) {
+    const state = emptyRoomState('coil', 0xD1A6);
+    let dodges = 0;
+    for (let trial = 0; trial < TRIALS; trial++) {
+      // Open 3-tall lane so a blocked sidestep does not confound the roll.
+      const m = createMonster({ type: 'CRAWLER', tx: 14, ty: 3, dodge: tier }, state.rng);
+      const cx = m.x + TUNING.monster.hurtbox / 2;
+      const cy = m.y + TUNING.monster.hurtbox / 2;
+      const d = DIRS[dir];
+      // Place the arrow up-range along its own axis, inside dodgeLookahead.
+      const arrow = { alive: true, id: trial + 1, dir, x: cx - d.dx * 10, y: cy - d.dy * 10 };
+      if (monsterDodgeCheck(m, arrow, state.rng, ROOM_DEFS.coil.tiles)) dodges++;
+    }
+    return dodges / TRIALS;
+  }
+
+  const cardinal = rate(6);             // West
+  const diagonal = rate(7);             // North-West
+  const expectCardinal = DODGE_LABEL[tier];
+  const expectDiagonal = DODGE_LABEL[tier] * DIAGONAL_DODGE_MUL;
+  console.log(`     cardinal ${cardinal.toFixed(3)} (expect ${expectCardinal.toFixed(2)})` +
+    `   diagonal ${diagonal.toFixed(3)} (expect ${expectDiagonal.toFixed(2)})`);
+
+  assert(`${tier}: cardinal dodge rate is within ${TOLERANCE} of its label`,
+    Math.abs(cardinal - expectCardinal) <= TOLERANCE,
+    `expected ${expectCardinal}, got ${cardinal.toFixed(3)}`);
+  assert(`${tier}: diagonal dodge rate is within ${TOLERANCE} of label x mul`,
+    Math.abs(diagonal - expectDiagonal) <= TOLERANCE,
+    `expected ${expectDiagonal}, got ${diagonal.toFixed(3)}`);
+  assert('a diagonal shot is genuinely harder to dodge than a cardinal one',
+    diagonal < cardinal - TOLERANCE,
+    `diagonal ${diagonal.toFixed(3)} not below cardinal ${cardinal.toFixed(3)}`);
+}
+
+console.log('\n# SECTION 4.1 [v1.2]: invulnerability burns during zoom transitions');
+{
+  // M5 EXPLOIT 2. invulnTicks decremented only inside updateFloor and
+  // updateRoom, so both 24-tick zooms ran for free - measured 0 of 24 consumed.
+  // PIP could bank respawn invulnerability by ducking into a room and out.
+  // Mutation-verified: restoring the decrement to updateFloor/updateRoom fails
+  // both arms below.
+  const zoom = TUNING.zoom.durationTicks;
+  const NEUTRAL = { dir: -1, facingLatch: -1, fire: false };
+
+  // Inbound: park PIP on a room door, let the zoom run, count what it cost.
+  {
+    const state = createGameState(0x2101, 0);
+    state.floor.wardens.length = 0;
+    const roomEntry = state.floor.layout.rooms.find(r => ROOM_DEFS[r.id]);
+    const size = TUNING.player.hitboxFloor;
+    const p = state.floor.player;
+    p.x = roomEntry.door.tx * TUNING.tile + (TUNING.tile - size) / 2;
+    p.y = roomEntry.door.ty * TUNING.tile + (TUNING.tile - size) / 2;
+    p.prevX = p.x; p.prevY = p.y;
+    p.invulnTicks = 500;
+    updateGame(state, NEUTRAL);
+    check('stepping on the door begins the zoom', state.phase, GAME_PHASES.ROOM_ZOOM_IN);
+    const before = p.invulnTicks;
+    let ticks = 0;
+    while (state.phase === GAME_PHASES.ROOM_ZOOM_IN && ticks < zoom * 4) {
+      updateGame(state, NEUTRAL); ticks++;
+    }
+    check('the inbound zoom cost one invuln tick per tick', before - p.invulnTicks, ticks);
+    assert('the inbound zoom actually ran for its full duration', ticks === zoom,
+      `ran ${ticks} ticks, expected ${zoom}`);
+  }
+
+  // Outbound: from inside the room, walk back onto the door and zoom out.
+  {
+    const state = createGameState(0x2102, 0);
+    state.floor.wardens.length = 0;
+    const p = state.floor.player;
+    p.invulnTicks = 500;
+    beginRoomZoomOut(state);
+    const before = p.invulnTicks;
+    let ticks = 0;
+    while (state.phase === GAME_PHASES.ROOM_ZOOM_OUT && ticks < zoom * 4) {
+      updateGame(state, NEUTRAL); ticks++;
+    }
+    check('the outbound zoom cost one invuln tick per tick', before - p.invulnTicks, ticks);
+    assert('the outbound zoom actually ran for its full duration', ticks === zoom,
+      `ran ${ticks} ticks, expected ${zoom}`);
+  }
+
+  // And the whole point: invulnerability EXPIRES on schedule regardless of how
+  // many view changes it is dragged through.
+  {
+    const state = createGameState(0x2103, 0);
+    state.floor.wardens.length = 0;
+    const p = state.floor.player;
+    const total = 90;
+    p.invulnTicks = total;
+    for (let i = 0; i < total; i++) updateGame(state, NEUTRAL);
+    check('invulnerability expires after exactly its tick budget', p.invulnTicks, 0);
+  }
 }
 
 console.log(`\n${failures === 0 ? 'PASS' : 'FAIL'} tests/rooms.mjs`);

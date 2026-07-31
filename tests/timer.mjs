@@ -59,12 +59,12 @@ console.log('\n# UNCHANGED BY DEATH - the suicide-farm guard');
   const state = createGameState(SEED, 0);
   run(state, 300);
   const before = state.floor.elapsedTicks;
-  const livesBefore = state.floor.player.lives;
+  const livesBefore = state.run.lives;
 
   applyPlayerDeath(state);
 
   check('timer is untouched by the death itself', state.floor.elapsedTicks, before);
-  check('a life was lost', state.floor.player.lives, livesBefore - 1);
+  check('a life was lost', state.run.lives, livesBefore - 1);
   check('phase is PLAYER_DEATH', state.phase, GAME_PHASES.PLAYER_DEATH);
 
   // The death freeze must keep ticking the clock, not pause it.
@@ -91,11 +91,11 @@ console.log('\n# a real contact death, not just the function call');
   state.floor.player.invulnTicks = 0;
   state.floor.wardens[0].x = state.floor.player.x;
   state.floor.wardens[0].y = state.floor.player.y;
-  const lives = state.floor.player.lives;
+  const lives = state.run.lives;
 
   updateGame(state, NEUTRAL);
 
-  check('contact killed PIP', state.floor.player.lives, lives - 1);
+  check('contact killed PIP', state.run.lives, lives - 1);
   check('timer unchanged by a contact death', state.floor.elapsedTicks, before + 1);
 }
 
@@ -106,9 +106,9 @@ console.log('\n# invulnerability actually protects');
   state.floor.player.invulnTicks = 60;
   state.floor.wardens[0].x = state.floor.player.x;
   state.floor.wardens[0].y = state.floor.player.y;
-  const lives = state.floor.player.lives;
+  const lives = state.run.lives;
   updateGame(state, NEUTRAL);
-  check('no life lost while invulnerable', state.floor.player.lives, lives);
+  check('no life lost while invulnerable', state.run.lives, lives);
 }
 
 console.log('\n# UNCHANGED BY ZOOM TRANSITIONS (section 8)');
@@ -161,7 +161,7 @@ console.log('\n# lives run out -> GAME OVER, clock still not rewound');
   const state = createGameState(SEED, 0);
   run(state, 200);
   let guard = 0;
-  while (state.floor.player.lives > 0 && guard++ < 10) {
+  while (state.run.lives > 0 && guard++ < 10) {
     applyPlayerDeath(state);
     run(state, state.deathFreezeTicks + 1);
   }

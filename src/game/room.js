@@ -165,8 +165,10 @@ export function updateRoom(room, player, arrow, input, descriptor, elapsedSec) {
 
   // Death checks. The safe tile beats everything (section 3.7).
   let death = false;
+  // READ ONLY. The decrement is tickPlayerInvuln in updateGame, unconditional
+  // and above the phase dispatch (section 4.1 [v1.2]).
   if (player.invulnTicks > 0) {
-    player.invulnTicks--;
+    // deliberately empty: invulnerable, no death check runs
   } else if (!playerOnSafeTile(room, player)) {
     for (const monster of room.monsters) {
       if (monsterTouchesPlayer(monster, player)) death = true;
