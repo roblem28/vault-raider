@@ -13,7 +13,7 @@ import { TUNING, DIRS, DIR_NEUTRAL } from '../data/tuning.js';
 import { ROOM_DEFS } from '../data/rooms.js';
 import { tileCenterPx, aabbOverlap } from './collision.js';
 import {
-  createArrowState, requestFire, updateArrow, updatePlayerRoom,
+  requestFire, updateArrow, updatePlayerRoom,
   createMonster, updateMonster, monsterTouchesPlayer, monsterDodgeCheck,
   monsterHurtBox, createCorpse, updateCorpses, corpseBlockedTiles,
   corpseAtPixel, shootCorpse, corpseTouchesPlayer,
@@ -32,7 +32,11 @@ export function createRoomRuntime(roomId, entryDoor, rng) {
     entryDoor,
     monsters,
     corpses: [],
-    arrow: createArrowState(),
+    // NO arrow here. PIP has ONE bow, so there is ONE arrow, and it lives on
+    // the floor runtime alongside PIP because both persist across room entry
+    // and exit. A per-view arrow object let PIP fire in the hall, walk into a
+    // room while it was still flying, and fire again - two arrows alive at
+    // once, which section 3.8 forbids. Measured before the fix.
     treasureTaken: false,
     // Section 3.3: once a WARDEN intrudes it NEVER leaves. The only escape is
     // leaving the room.
@@ -88,7 +92,7 @@ export function spawnIntrusionWarden(room, descriptor) {
   );
 }
 
-export function updateRoom(room, player, input, descriptor, elapsedSec) {
+export function updateRoom(room, player, arrow, input, descriptor, elapsedSec) {
   const speedMul = descriptor.speedMul;
 
   // Corpses block PIP ONLY, by TILE OCCUPANCY (section 3.5). Monsters and the
@@ -96,20 +100,20 @@ export function updateRoom(room, player, input, descriptor, elapsedSec) {
   const blocked = corpseBlockedTiles(room);
   updatePlayerRoom(player, input, room.tiles, speedMul, blocked);
 
-  if (input.fire) requestFire(room.arrow);
-  updateArrow(room.arrow, player, room.tiles);
+  if (input.fire) requestFire(arrow);
+  updateArrow(arrow, player, room.tiles);
 
   // Arrow resolution. Order matters: dodge first, then hit.
-  if (room.arrow.alive) {
+  if (arrow.alive) {
     for (const monster of room.monsters) {
-      monsterDodgeCheck(monster, room.arrow, room.rng, room.tiles);
+      monsterDodgeCheck(monster, arrow, room.rng, room.tiles);
     }
     for (const monster of room.monsters) {
       if (!monster.alive) continue;
       const m = monsterHurtBox(monster);
-      if (aabbOverlap(room.arrow.x, room.arrow.y, 1, 1, m.x, m.y, m.w, m.h)) {
+      if (aabbOverlap(arrow.x, arrow.y, 1, 1, m.x, m.y, m.w, m.h)) {
         monster.hp--;
-        room.arrow.alive = false;
+        arrow.alive = false;
         if (monster.hp <= 0) {
           monster.alive = false;
           room.corpses.push(createCorpse(monster.x, monster.y));
@@ -119,11 +123,11 @@ export function updateRoom(room, player, input, descriptor, elapsedSec) {
     }
   }
   // Section 3.6: shooting a corpse is punished.
-  if (room.arrow.alive) {
-    const hit = corpseAtPixel(room, room.arrow.x, room.arrow.y);
+  if (arrow.alive) {
+    const hit = corpseAtPixel(room, arrow.x, arrow.y);
     if (hit) {
       shootCorpse(room, hit);
-      room.arrow.alive = false;
+      arrow.alive = false;
     }
   }
 
@@ -185,8 +189,6 @@ export function resetUnlootedRoom(room) {
     room.monsters.push(createMonster(spawn, room.rng));
   }
   room.corpses.length = 0;
-  room.arrow.alive = false;
-  room.arrow.pending = false;
   room.intruder = null;
   room.treasureTaken = false;
 }

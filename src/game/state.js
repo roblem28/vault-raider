@@ -90,7 +90,7 @@ export function updateGame(state, input) {
     }
     case GAME_PHASES.ROOM_VIEW: {
       const result = updateRoom(
-        state.room, state.floor.player, input,
+        state.room, state.floor.player, state.floor.arrow, input,
         state.floor.descriptor, floorElapsedSec(state.floor)
       );
       if (result.death) { applyPlayerDeath(state); break; }
@@ -128,7 +128,17 @@ export function updateGame(state, input) {
 // structurally by tickFloorTimer sitting above the phase dispatch, not by
 // anything in these functions - do not add a pause here.
 
+// An arrow in flight does not survive a view change. Section 3.8 allows exactly
+// ONE alive; carrying a hall arrow into a room would mean either two in flight
+// or a projectile at hall coordinates on a different map. Clearing it also
+// stops the transition being used to bank a shot.
+function clearArrowOnViewChange(state) {
+  state.floor.arrow.alive = false;
+  state.floor.arrow.pending = false;
+}
+
 export function beginRoomZoomIn(state, door) {
+  clearArrowOnViewChange(state);
   state.pendingRoomId = door.id;
   state.pendingDoor = door;
   state.floorReturn = { x: state.floor.player.x, y: state.floor.player.y };
@@ -155,6 +165,7 @@ export function enterRoom(state) {
 }
 
 export function beginRoomZoomOut(state) {
+  clearArrowOnViewChange(state);
   state.zoomTicks = 0;
   transitionPhase(state, GAME_PHASES.ROOM_ZOOM_OUT);
 }
@@ -266,7 +277,8 @@ export function hashGameState(state) {
     nums.push(1, r.treasureTaken ? 1 : 0, r.intruder ? 1 : 0);
     for (const m of r.monsters) nums.push(m.x, m.y, m.dir, m.hp, m.alive ? 1 : 0);
     for (const c of r.corpses) nums.push(c.tx, c.ty, c.phase, c.phaseTicks);
-    nums.push(r.arrow.alive ? 1 : 0, r.arrow.x, r.arrow.y, r.arrow.dir, r.arrow.windup);
+    // No per-room arrow to hash: there is one arrow and it is hashed above
+    // with the rest of the floor state.
     if (r.intruder) pushWardenState(nums, r.intruder);
   }
 

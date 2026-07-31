@@ -316,13 +316,69 @@ console.log('\n# safe tile (section 3.7)');
   check('camping the safe tile is genuinely unkillable', p.lives, lives);
 }
 
+console.log('\n# ONE arrow across a ZOOM, both directions (section 3.8)');
+{
+  // Section 3.8: "Exactly one arrow alive at a time." The M2 fix consolidated
+  // the fire GATE but left two arrow STATE objects, floor.arrow and room.arrow -
+  // a half-fix of the same shape. Measured before this fix: fire in the hall,
+  // walk onto a door while it is still flying, enter the room, fire again ->
+  // TWO arrows alive at once. The earlier one-arrow test held fire for 300
+  // ticks inside a single view and could never have seen it.
+  //
+  // This counts arrows across the WHOLE system, on both sides of both zooms.
+  const state = createGameState(0xA770, 0);
+  state.floor.wardens.length = 0;
+  const p = state.floor.player;
+  const T = TUNING.tile;
+  p.invulnTicks = 1e9;
+  // Top corridor row 3 is open x=3..36, so firing east gives ~208px of flight -
+  // far longer than the ~26 ticks it takes to walk down to the coil door.
+  p.x = 10 * T + 2;
+  p.y = 3 * T + 2;
+  p.prevX = p.x;
+  p.prevY = p.y;
+  p.facing = 2;
+
+  const aliveCount = () =>
+    (state.floor.arrow && state.floor.arrow.alive ? 1 : 0) +
+    (state.room && state.room.arrow && state.room.arrow.alive ? 1 : 0);
+
+  let worst = 0;
+  const step = (input) => { updateGame(state, input); worst = Math.max(worst, aliveCount()); };
+
+  step({ dir: -1, facingLatch: -1, fire: true });
+  for (let i = 0; i < 5; i++) step({ dir: -1, facingLatch: -1, fire: false });
+  assert('a hall arrow is in flight before the transition', state.floor.arrow.alive);
+
+  // Walk onto the door and through the zoom, holding fire the whole way.
+  let guard = 0;
+  while (state.phase === GAME_PHASES.FLOOR_VIEW && guard++ < 300) {
+    step({ dir: 4, facingLatch: 4, fire: true });
+  }
+  for (let i = 0; i < TUNING.zoom.durationTicks + 4; i++) {
+    step({ dir: -1, facingLatch: -1, fire: true });
+  }
+  check('the zoom landed in the room', state.phase, GAME_PHASES.ROOM_VIEW);
+  for (let i = 0; i < 200; i++) step({ dir: -1, facingLatch: -1, fire: true });
+
+  // And back out through the exit zoom, still holding fire.
+  const exitDoor = ROOM_DEFS.coil.doors[0];
+  p.x = exitDoor.tx * T + 1;
+  p.y = exitDoor.ty * T + 1;
+  for (let i = 0; i < TUNING.zoom.durationTicks + 240; i++) {
+    step({ dir: -1, facingLatch: -1, fire: true });
+  }
+
+  check('never more than ONE arrow alive anywhere, across both zooms', worst, 1);
+}
+
 console.log('\n# exactly one arrow alive, in room view too (section 3.8)');
 {
   const state = emptyRoomState('coil', 0x1A88);
   let worst = 0;
   for (let i = 0; i < 300; i++) {
     updateGame(state, { dir: -1, facingLatch: -1, fire: true });
-    const a = state.room.arrow;
+    const a = state.floor.arrow;   // the ONE arrow (section 3.8)
     worst = Math.max(worst, (a.alive ? 1 : 0) + (a.pending ? 1 : 0));
   }
   check('never more than one arrow alive or pending', worst, 1);
@@ -396,7 +452,7 @@ console.log('\n# arrow vs monster: hit, kill, corpse (sections 3.8, 3.5)');
   }
   check('shooting a CRAWLER kills it', m.alive, false);
   check('and leaves exactly one corpse', corpseSeen, 1);
-  check('the arrow is consumed by the hit', room.arrow.alive, false);
+  check('the arrow is consumed by the hit', state.floor.arrow.alive, false);
 }
 
 console.log('\n# corpse decay runs to completion (section 4.5)');

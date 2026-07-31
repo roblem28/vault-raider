@@ -155,10 +155,12 @@ export function renderRoomView(gfx, state, alpha) {
     gfxFillRect(gfx, mx + 1, my + 1, 2, 2, PAL_MONSTER_EDGE);
   }
 
-  if (room.arrow.alive) {
+  // The ONE arrow, owned by the floor runtime (section 3.8).
+  const roomArrow = state.floor.arrow;
+  if (roomArrow.alive) {
     gfxFillRect(gfx,
-      Math.round(lerp(room.arrow.prevX, room.arrow.x, alpha)) - 1,
-      Math.round(lerp(room.arrow.prevY, room.arrow.y, alpha)) - 1, 2, 2, PAL_ARROW);
+      Math.round(lerp(roomArrow.prevX, roomArrow.x, alpha)) - 1,
+      Math.round(lerp(roomArrow.prevY, roomArrow.y, alpha)) - 1, 2, 2, PAL_ARROW);
   }
 
   if (room.intruder) {

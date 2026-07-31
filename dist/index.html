@@ -1663,7 +1663,11 @@ function createRoomRuntime(roomId, entryDoor, rng) {
     entryDoor,
     monsters,
     corpses: [],
-    arrow: createArrowState(),
+    // NO arrow here. PIP has ONE bow, so there is ONE arrow, and it lives on
+    // the floor runtime alongside PIP because both persist across room entry
+    // and exit. A per-view arrow object let PIP fire in the hall, walk into a
+    // room while it was still flying, and fire again - two arrows alive at
+    // once, which section 3.8 forbids. Measured before the fix.
     treasureTaken: false,
     // Section 3.3: once a WARDEN intrudes it NEVER leaves. The only escape is
     // leaving the room.
@@ -1719,7 +1723,7 @@ function spawnIntrusionWarden(room, descriptor) {
   );
 }
 
-function updateRoom(room, player, input, descriptor, elapsedSec) {
+function updateRoom(room, player, arrow, input, descriptor, elapsedSec) {
   const speedMul = descriptor.speedMul;
 
   // Corpses block PIP ONLY, by TILE OCCUPANCY (section 3.5). Monsters and the
@@ -1727,20 +1731,20 @@ function updateRoom(room, player, input, descriptor, elapsedSec) {
   const blocked = corpseBlockedTiles(room);
   updatePlayerRoom(player, input, room.tiles, speedMul, blocked);
 
-  if (input.fire) requestFire(room.arrow);
-  updateArrow(room.arrow, player, room.tiles);
+  if (input.fire) requestFire(arrow);
+  updateArrow(arrow, player, room.tiles);
 
   // Arrow resolution. Order matters: dodge first, then hit.
-  if (room.arrow.alive) {
+  if (arrow.alive) {
     for (const monster of room.monsters) {
-      monsterDodgeCheck(monster, room.arrow, room.rng, room.tiles);
+      monsterDodgeCheck(monster, arrow, room.rng, room.tiles);
     }
     for (const monster of room.monsters) {
       if (!monster.alive) continue;
       const m = monsterHurtBox(monster);
-      if (aabbOverlap(room.arrow.x, room.arrow.y, 1, 1, m.x, m.y, m.w, m.h)) {
+      if (aabbOverlap(arrow.x, arrow.y, 1, 1, m.x, m.y, m.w, m.h)) {
         monster.hp--;
-        room.arrow.alive = false;
+        arrow.alive = false;
         if (monster.hp <= 0) {
           monster.alive = false;
           room.corpses.push(createCorpse(monster.x, monster.y));
@@ -1750,11 +1754,11 @@ function updateRoom(room, player, input, descriptor, elapsedSec) {
     }
   }
   // Section 3.6: shooting a corpse is punished.
-  if (room.arrow.alive) {
-    const hit = corpseAtPixel(room, room.arrow.x, room.arrow.y);
+  if (arrow.alive) {
+    const hit = corpseAtPixel(room, arrow.x, arrow.y);
     if (hit) {
       shootCorpse(room, hit);
-      room.arrow.alive = false;
+      arrow.alive = false;
     }
   }
 
@@ -1816,8 +1820,6 @@ function resetUnlootedRoom(room) {
     room.monsters.push(createMonster(spawn, room.rng));
   }
   room.corpses.length = 0;
-  room.arrow.alive = false;
-  room.arrow.pending = false;
   room.intruder = null;
   room.treasureTaken = false;
 }
@@ -2049,7 +2051,7 @@ function updateGame(state, input) {
     }
     case GAME_PHASES.ROOM_VIEW: {
       const result = updateRoom(
-        state.room, state.floor.player, input,
+        state.room, state.floor.player, state.floor.arrow, input,
         state.floor.descriptor, floorElapsedSec(state.floor)
       );
       if (result.death) { applyPlayerDeath(state); break; }
@@ -2087,7 +2089,17 @@ function updateGame(state, input) {
 // structurally by tickFloorTimer sitting above the phase dispatch, not by
 // anything in these functions - do not add a pause here.
 
+// An arrow in flight does not survive a view change. Section 3.8 allows exactly
+// ONE alive; carrying a hall arrow into a room would mean either two in flight
+// or a projectile at hall coordinates on a different map. Clearing it also
+// stops the transition being used to bank a shot.
+function clearArrowOnViewChange(state) {
+  state.floor.arrow.alive = false;
+  state.floor.arrow.pending = false;
+}
+
 function beginRoomZoomIn(state, door) {
+  clearArrowOnViewChange(state);
   state.pendingRoomId = door.id;
   state.pendingDoor = door;
   state.floorReturn = { x: state.floor.player.x, y: state.floor.player.y };
@@ -2114,6 +2126,7 @@ function enterRoom(state) {
 }
 
 function beginRoomZoomOut(state) {
+  clearArrowOnViewChange(state);
   state.zoomTicks = 0;
   transitionPhase(state, GAME_PHASES.ROOM_ZOOM_OUT);
 }
@@ -2225,7 +2238,8 @@ function hashGameState(state) {
     nums.push(1, r.treasureTaken ? 1 : 0, r.intruder ? 1 : 0);
     for (const m of r.monsters) nums.push(m.x, m.y, m.dir, m.hp, m.alive ? 1 : 0);
     for (const c of r.corpses) nums.push(c.tx, c.ty, c.phase, c.phaseTicks);
-    nums.push(r.arrow.alive ? 1 : 0, r.arrow.x, r.arrow.y, r.arrow.dir, r.arrow.windup);
+    // No per-room arrow to hash: there is one arrow and it is hashed above
+    // with the rest of the floor state.
     if (r.intruder) pushWardenState(nums, r.intruder);
   }
 
@@ -2594,10 +2608,12 @@ function renderRoomView(gfx, state, alpha) {
     gfxFillRect(gfx, mx + 1, my + 1, 2, 2, PAL_MONSTER_EDGE);
   }
 
-  if (room.arrow.alive) {
+  // The ONE arrow, owned by the floor runtime (section 3.8).
+  const roomArrow = state.floor.arrow;
+  if (roomArrow.alive) {
     gfxFillRect(gfx,
-      Math.round(lerp(room.arrow.prevX, room.arrow.x, alpha)) - 1,
-      Math.round(lerp(room.arrow.prevY, room.arrow.y, alpha)) - 1, 2, 2, PAL_ARROW);
+      Math.round(lerp(roomArrow.prevX, roomArrow.x, alpha)) - 1,
+      Math.round(lerp(roomArrow.prevY, roomArrow.y, alpha)) - 1, 2, 2, PAL_ARROW);
   }
 
   if (room.intruder) {
