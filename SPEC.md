@@ -1,7 +1,7 @@
-# VAULT RAIDER — Game Spec v0.9
+# VAULT RAIDER — Game Spec v1.0
 **An arcade dungeon crawler in the tradition of Venture (Exidy 1981 /
 ColecoVision 1982)** — nominative reference, see §0.1
-Date: 2026-07-31 · Owner: Box of Rox LLC · Supersedes v0.8
+Date: 2026-07-31 · Owner: Box of Rox LLC · Supersedes v0.9
 
 Changes from v0.1 are marked **[v0.2]**. Changes from v0.2 are marked **[v0.3]**
 (build output naming, deployment §16). Changes from v0.3 are marked **[v0.4]**
@@ -31,6 +31,11 @@ Changes from v0.8 are marked **[v0.9]** — the §4.4 dodge roll corrected from
 per-tick to ONCE PER ARROW PER MONSTER. `dodgeSkill` values were authored as
 per-shot probabilities and implemented as per-tick rolls, which compounded them
 to near-certainty; at HIGH that made a monster unhittable rather than hard.
+Changes from v0.9 are marked **[v1.0]** — the FEEL GATE PASSED, and three
+questions it left open are now ruled: a blocked dodge sidestep retries the
+opposite direction (§4.4), the intrusion siren sounds in floor view as well as
+room view (§10), and the four unread `corpse` flags are deleted from §6 because
+§3.5 and §4.1 hard-spec that behaviour.
 
 ---
 
@@ -338,8 +343,30 @@ aligned to that monster's axis, roll **once**:
 rng() < dodgeSkill[tier] × (shotIsDiagonal ? diagonalDodgeMul : 1.0)
 ```
 
-On success, sidestep 1 tile perpendicular. Whether it rolled or not, that
-monster does not roll again for that arrow.
+On success, sidestep 1 tile perpendicular. **[v1.0] If that tile is blocked,
+attempt the OPPOSITE perpendicular. If both are blocked the dodge fails and the
+monster takes the hit** — the geometry genuinely gave it nowhere to go, and the
+roll is still spent.
+
+Whether it rolled, dodged, or failed for want of room, that monster does not
+roll again for that arrow.
+
+**[v1.0] Why the retry is required.** Single-direction sidestep let room shape
+silently scale the dodge tier, because a blocked sidestep was eaten in silence.
+Measured at HIGH (label 0.80), 3000 trials per cell:
+
+| Room shape | Single direction | Retry opposite |
+|---|---|---|
+| Open hall, ≥3 tiles tall | 0.808 | **0.809** |
+| 2-tall lane (`THE COIL`) | 0.402 | **0.809** |
+| 1-tall corridor | 0.000 | 0.000 |
+
+At 0.000 a `BLINKER` and a `CRAWLER` are identical and the tier means nothing —
+a dead mechanic, worse than either extreme. The 1-tall corridor stays at zero
+after the fix and that is correct: there is no perpendicular room at all.
+
+This landed **before** any room geometry was authored at M4, deliberately.
+Twelve layouts designed against rates that then moved would be rework.
 
 **`dodgeSkill` values are PER-SHOT AGGREGATE probabilities.** LOW means a 15%
 chance of dodging a shot. Not 15% per tick.
@@ -485,9 +512,13 @@ export const TUNING = {
             countByLayout: [2, 3, 4],
             hurtbox: 8 },                           // §4.1, §4.3 - no collision box
 
-  corpse: { decayPhases: 4, phaseSec: 2.5,
-            lethalToPlayer: true, blocksPlayer: true,
-            blocksMonsters: false, blocksWarden: false },
+  // [v1.0] lethalToPlayer / blocksPlayer / blocksMonsters / blocksWarden
+  // DELETED. All four were declared and never read: the behaviour they described
+  // is hard-specced in §3.5 and §4.1 and enforced structurally instead - corpses
+  // are simply never passed to monster or WARDEN movement. An unread flag is a
+  // lie about what is configurable, and a future editor flipping one would get
+  // no effect at all.
+  corpse: { decayPhases: 4, phaseSec: 2.5 },
 
   floorSpeedMul: [1.00, 1.08, 1.16, 1.24, 1.32, 1.40, 1.50, 1.60, 1.72],
 
@@ -717,11 +748,18 @@ Procedural, no asset files.
 | Arrow fire | Noise burst + pitch drop |
 | Monster death | Square-wave downward glide |
 | Treasure pickup | Ascending major triad |
-| **Intrusion warning** | Rising siren, begins `intrusionWarnSec` before entry — must be unmistakable |
+| **Intrusion warning** | Rising siren, begins `intrusionWarnSec` before entry — must be unmistakable. **[v1.0]** Sounds in FLOOR VIEW as well as room view — see below |
 | WARDEN in room | Continuous dissonant throb; silences the theme |
 | PIP death | Long descending chromatic run |
 
 **[v0.2]** `AudioContext` is created **lazily on the first user gesture**, never at load — browser autoplay policy will otherwise leave the game silent with no error.
+
+**[v1.0] The intrusion siren sounds in BOTH views.** The clock is per-FLOOR
+(§3.4), so the threat is per-floor. A player standing in the hall at t=41s is
+four seconds from a WARDEN entering whichever room they walk into next, and they
+need that to decide whether to commit. Silence in the hall would make the hall
+feel safe when it is not. The on-screen indicator §11 requires is driven from
+the same value, in both views, so sound and picture cannot disagree.
 
 ---
 
@@ -773,8 +811,8 @@ happens in the game:
 
 - RNG state, tick count, current phase
 - PIP position, entity facing, lives, invulnerability timer
-- Arrow: alive flag, position, direction, windup counter
-- Every monster: position, state, HP, dodge state
+- Arrow: alive flag, position, direction, windup counter, **[v0.9]** spawn `id`
+- Every monster: position, state, HP, dodge state, **[v0.9]** `dodgedArrowId`
 - Every corpse: position, decay phase
 - Floor timer
 - Per-room looted flags
@@ -790,6 +828,11 @@ timing rather than on logic:
 
 The test for inclusion: *if omitting this field could hide a divergence that
 changes what happens in the game, it goes in.*
+
+**[v0.9]** The two fields added above are why this list has to be maintained
+rather than assumed: §4.4's once-per-arrow dodge is expressed entirely through
+`arrow.id` and `monster.dodgedArrowId`, so omitting either would let two replays
+diverge on whether a monster dodged while every other field matched.
 
 #### **[v0.5]** 12.1.2 Input recorder — required at M1
 

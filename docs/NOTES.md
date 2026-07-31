@@ -578,6 +578,64 @@ felt before it is ruled. **If the gate rules for it, §4.4 must be amended befor
 any room authoring at M4**, because otherwise twelve layouts get designed
 against dodge rates that later change.
 
+### FEEL GATE PASSED — 2026-07-31. Three rulings, all SPEC v1.0.
+
+THE COIL played, three sealed doors correct as M4 scope, hall firing confirmed
+useless against WARDENs. Content work is unblocked.
+
+**M3-D5 RULED — a blocked dodge retries the opposite direction.** The geometry
+table settled it without more play: `0.000` in a 1-tall corridor is not a
+tuned-low rate, it is a **dead mechanic** — BLINKER and CRAWLER become identical
+and the tier stops meaning anything, which is worse than either extreme.
+
+SPEC §4.4 `[v1.0]`: sidestep one tile perpendicular; if blocked, attempt the
+opposite; if both are blocked the dodge fails and the monster takes the hit,
+because the geometry genuinely gave it nowhere to go. The roll is still spent.
+
+Measured at HIGH (label 0.80), 3000 trials per cell:
+
+| Room shape | Single direction | Retry opposite |
+|---|---|---|
+| Open hall, ≥3 tall | 0.808 | **0.809** |
+| 2-tall lane (THE COIL) | 0.402 | **0.809** |
+| 1-tall corridor | 0.000 | 0.000 |
+
+Mutation-verified: reverting to single-direction drops the 2-tall lane to 0.415
+and fails. **Landed before any M4 room authoring**, deliberately — twelve
+layouts designed against rates that then moved would be the rework.
+
+**M3-D2 CLOSED — the siren sounds in both views.** SPEC §10 `[v1.0]`. The clock
+is per-FLOOR so the threat is per-floor: a player in the hall at t=41s is four
+seconds from a WARDEN entering whichever room they walk into next, and silence
+would make the hall feel safe when it is not.
+
+**M3-D3 CLOSED — the four dead `corpse` flags are deleted.** `lethalToPlayer`,
+`blocksPlayer`, `blocksMonsters`, `blocksWarden` were declared and never read;
+§3.5 and §4.1 hard-spec that behaviour and the code enforces it structurally
+(corpses are never passed to monster or WARDEN movement at all). Removed from
+SPEC §6 and `tuning.js`. `decayPhases` and `phaseSec` are live and stay.
+
+Three code comments still cited the deleted flags after the deletion — the same
+"reference to something that is not there" class as the fabricated NOTES anchor.
+Fixed by hand.
+
+### M3-F8 — a checker I wrote, could not verify, and removed
+
+I extended `refs.mjs` with a check that every cited `TUNING.x.y` key resolves,
+aimed at the stale-comment class above. **It did not work in either direction**:
+it missed a planted dead-flag citation, and a corrected version reported **42
+false positives on a clean tree**, because the key extractor only captured the
+first key per line and multi-key lines like `logicalW: 320, logicalH: 240` lost
+everything after the first.
+
+Removed rather than shipped. A broken checker inside the file whose whole job is
+protecting the audit trail is worse than none — it reports green while missing
+the class it claims to cover, which is the cries-wolf failure this project
+already ruled on when retiring the v0.5 blanket IP rule.
+
+The reasoning and the rebuild conditions are recorded at the site in
+`refs.mjs` rather than only here, so the next reader meets them in the code.
+
 ### M3-D1 — AT RISK, accepted: two arrow slots, one gate
 
 `floor.arrow` and `room.arrow` are separate objects sharing one `requestFire`

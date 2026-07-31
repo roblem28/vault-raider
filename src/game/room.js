@@ -142,7 +142,7 @@ export function updateRoom(room, player, arrow, input, descriptor, elapsedSec) {
     // Section 4.3: PURE chase, ignores geometry cost. The trailing `true` is
     // load-bearing - without it the intruder rolls against pursuit bias like a
     // patrol WARDEN and heads back to its spawn door on ~10% of ticks forever.
-    // Corpses do not block it (blocksWarden is false).
+    // Corpses do not block it (section 3.5).
     updateWarden(room.intruder, player, room.tiles, elapsedSec, speedMul, room.rng, true);
   }
 

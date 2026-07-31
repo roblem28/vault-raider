@@ -64,7 +64,7 @@ export function updateFloor(floor, input) {
 
   // Corpses block PIP only (section 3.5) and do not exist until M3, so the
   // blocked-tile set is null here. WARDENs are never passed one - they are
-  // unblockable by corpses by definition (TUNING.corpse.blocksWarden).
+  // unblockable by corpses by definition (section 3.5).
   updatePlayerFloor(floor.player, input, floor.mask, speedMul, null);
 
   // Section 3.2: hall firing is enabled and useless. The arrow is real.

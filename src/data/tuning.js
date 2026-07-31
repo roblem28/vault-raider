@@ -61,11 +61,10 @@ export const TUNING = {
     hurtbox: 8                            // section 4.1, 4.3 - no collision box
   },
 
-  corpse: {
-    decayPhases: 4, phaseSec: 2.5,
-    lethalToPlayer: true, blocksPlayer: true,
-    blocksMonsters: false, blocksWarden: false
-  },
+  // [v1.0] The four boolean flags here were deleted: declared, never read, and
+  // describing behaviour that section 3.5 / 4.1 hard-spec and the code enforces
+  // structurally (corpses are never passed to monster or WARDEN movement).
+  corpse: { decayPhases: 4, phaseSec: 2.5 },
 
   floorSpeedMul: [1.00, 1.08, 1.16, 1.24, 1.32, 1.40, 1.50, 1.60, 1.72],
 

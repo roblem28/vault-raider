@@ -197,7 +197,25 @@ assert(`every MANIFEST entry exists on disk (${manifest.length} entries)`,
 assert('every src/*.js file is in the MANIFEST',
   srcUnlisted.length === 0, `unlisted: ${srcUnlisted.join(', ')}`);
 
-// --- 6. the checker must be capable of failing ------------------------------
+// --- 6. NOT CHECKED: cited tuning keys ---------------------------------------
+//
+// A check that every `TUNING.x.y` reference resolves was written here and then
+// REMOVED, because it did not work in either direction. It missed a planted
+// dead-flag citation, and a corrected version reported 42 false positives on a
+// clean tree - the key extractor only captured the FIRST key on each line, so
+// multi-key lines like `logicalW: 320, logicalH: 240` lost everything after the
+// first.
+//
+// A broken checker in the file whose whole job is protecting the audit trail is
+// worse than no checker: it reports green while missing the defect class it
+// claims to cover. Same reasoning that retired the v0.5 blanket IP rule.
+//
+// The defect it was aimed at - three comments still citing TUNING.corpse.*
+// flags after those flags were deleted - was fixed by hand. If this is
+// rebuilt, extract keys with a real brace-aware walk, not a line regex, and
+// mutation-verify it against a planted citation BEFORE trusting it.
+
+// --- 7. the checker must be capable of failing ------------------------------
 {
   const planted = 'see docs/NOTES.md ZZ99';
   const m = [...planted.matchAll(NOTE_REF)];

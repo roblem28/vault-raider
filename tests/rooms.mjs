@@ -22,6 +22,7 @@ import {
   createCorpse, createMonster, shootCorpse, createWarden, updateWarden, monsterDodgeCheck
 } from '../src/game/entities.js';
 import { advanceAccumulator } from '../src/core/loop.js';
+import { createRng } from '../src/core/rng.js';
 import { boxHitsTiles } from '../src/game/collision.js';
 
 let failures = 0;
@@ -744,6 +745,69 @@ console.log('\n# dodge rate MATCHES ITS LABEL at every tier (section 4.4 [v0.9])
     assert(`${tier}: still ${expected} after ${TICKS_IN_WINDOW} ticks in the window`,
       Math.abs(aggRate - expected) <= TOLERANCE,
       `label ${expected}, got ${aggRate.toFixed(3)} - this is the per-tick compounding defect`);
+  }
+}
+
+console.log('\n# EFFECTIVE dodge across room geometry (section 4.4 [v1.0])');
+{
+  // A dodge that rolls but cannot move is eaten in silence, so room shape used
+  // to scale the tier without anyone designing it. Measured before the retry:
+  //   HIGH 0.808 open hall / 0.402 in a 2-tall lane / 0.000 in a 1-tall corridor.
+  // At 0.000 a BLINKER and a CRAWLER are identical - a dead mechanic.
+  //
+  // [v1.0] retries the OPPOSITE perpendicular when the first is blocked, which
+  // restores the label anywhere the monster has somewhere to go. A 1-tall
+  // corridor genuinely has nowhere on the perpendicular axis, so it stays at
+  // zero - measured and asserted against the MEASURED value, not the label,
+  // because that one is honest geometry rather than a defect.
+  const TRIALS = 3000;
+  const TOL = 0.035;
+
+  // Synthetic maps standing in for the shapes section 5 describes.
+  const shape = (openRow) => {
+    const g = [];
+    for (let y = 0; y < TUNING.gridH; y++) {
+      let r = '';
+      for (let x = 0; x < TUNING.gridW; x++) {
+        r += (openRow(y) && x >= 2 && x <= 37) ? TILE_CHARS.FLOOR : TILE_CHARS.WALL;
+      }
+      g.push(r);
+    }
+    return g;
+  };
+  const SHAPES = [
+    { name: 'open hall (10 tall)', tiles: shape((y) => y >= 2 && y <= 11), mid: 6, expectLabel: true },
+    { name: '2-tall lane (COIL)', tiles: shape((y) => y >= 2 && y <= 3), mid: 2, expectLabel: true },
+    { name: '1-tall corridor', tiles: shape((y) => y === 2), mid: 2, expectLabel: false }
+  ];
+
+  for (const sh of SHAPES) {
+    for (const tier of ['LOW', 'MED', 'HIGH']) {
+      const rng = createRng(0xD0D6);
+      let dodged = 0;
+      for (let i = 0; i < TRIALS; i++) {
+        const m = createMonster({ type: 'CRAWLER', tx: 20, ty: sh.mid, dodge: tier }, rng);
+        const arrow = {
+          alive: true, id: i + 1, dir: 6,
+          x: m.x + TUNING.monster.hurtbox / 2 + 10,
+          y: m.y + TUNING.monster.hurtbox / 2
+        };
+        if (monsterDodgeCheck(m, arrow, rng, sh.tiles)) dodged++;
+      }
+      const rate = dodged / TRIALS;
+      const label = TUNING.dodgeSkill[tier];
+      console.log(`     ${sh.name.padEnd(20)} ${tier.padEnd(4)} ${rate.toFixed(3)}  (label ${label})`);
+      if (sh.expectLabel) {
+        assert(`${sh.name} / ${tier}: effective dodge matches the label`,
+          Math.abs(rate - label) <= TOL,
+          `label ${label}, got ${rate.toFixed(3)} - single-direction sidestep halves this`);
+      } else {
+        // Honest geometry: no perpendicular room at all. Asserted against the
+        // MEASURED value so a regression here is still visible.
+        assert(`${sh.name} / ${tier}: nowhere to go, so no dodge lands`,
+          rate === 0, `got ${rate.toFixed(3)}`);
+      }
+    }
   }
 }
 

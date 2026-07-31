@@ -468,17 +468,37 @@ export function monsterDodgeCheck(monster, arrow, rng, tiles) {
   const chance = skill * (shot.diagonal ? TUNING.monster.diagonalDodgeMul : 1.0);
   if (rng.nextFloat() >= chance) return false;
 
-  // Sidestep one tile perpendicular to the shot.
+  // Sidestep one tile perpendicular to the shot. Section 4.4 [v1.0]: try the
+  // chosen direction, then THE OPPOSITE ONE.
+  //
+  // Single-direction sidestep let room geometry silently scale the dodge tier,
+  // because a blocked sidestep was eaten in silence. Measured, HIGH (0.80):
+  //   open hall, 3+ tiles tall   0.808
+  //   2-tall lane (THE COIL)     0.402   - one side is always wall
+  //   1-tall corridor            0.000   - a DEAD mechanic, tier meaningless
+  // At 0.000 a BLINKER and a CRAWLER are identical, which is worse than either
+  // extreme. Retrying the opposite direction restores the label wherever the
+  // monster has anywhere at all to go.
+  //
+  // Both blocked is a legitimate failure: the geometry genuinely gave it
+  // nowhere. The roll is still spent - dodgedArrowId was committed above - so
+  // this is one dodge attempt, not two.
   const perp = shot.dx !== 0 ? { dx: 0, dy: 1 } : { dx: 1, dy: 0 };
-  const sign = rng.nextFloat() < 0.5 ? -1 : 1;
   const size = TUNING.monster.hurtbox;
-  const moved = moveAxisSeparated(
-    monster.x, monster.y, size, size,
-    perp.dx * TUNING.tile * sign, perp.dy * TUNING.tile * sign, tiles, null
-  );
-  monster.x = moved.x;
-  monster.y = moved.y;
-  return true;
+  const firstSign = rng.nextFloat() < 0.5 ? -1 : 1;
+
+  for (const sign of [firstSign, -firstSign]) {
+    const moved = moveAxisSeparated(
+      monster.x, monster.y, size, size,
+      perp.dx * TUNING.tile * sign, perp.dy * TUNING.tile * sign, tiles, null
+    );
+    if (moved.x !== monster.x || moved.y !== monster.y) {
+      monster.x = moved.x;
+      monster.y = moved.y;
+      return true;
+    }
+  }
+  return false;
 }
 
 // --- Corpses ---------------------------------------------------------------
@@ -505,7 +525,8 @@ export function corpseTileKey(corpse) {
 }
 
 // Corpses block PIP ONLY. Monsters and WARDENs walk through them
-// (TUNING.corpse.blocksMonsters / blocksWarden, both false).
+// Section 3.5: monsters and WARDENs walk through corpses. Enforced
+// structurally - neither mover is given the blocked-tile set at all.
 export function corpseBlockedTiles(room) {
   const set = new Set();
   for (const corpse of room.corpses) set.add(corpseTileKey(corpse));
