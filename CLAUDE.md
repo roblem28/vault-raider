@@ -81,6 +81,27 @@ NOT required for local-only git on `docs/`, `SPEC.md`, `CLAUDE.md`, or
 The gate exists so tests and IP review run before code ships. A docs commit has
 nothing to gate.
 
+### Commit when the CODE is green, BEFORE the heavy review gates
+
+Order is: implement → tests green → `build.py` clean → `ip-compliance-reviewer`
+→ **commit and push** → then `fidelity-auditor`, `game-feel-critic`, and the
+rest. Fixes from the gates are a follow-up commit.
+
+Gates are re-runnable; an hour of uncommitted work on one machine is not. Three
+connections dropped during this project, one of them killing two review agents
+mid-run simultaneously. **A dropped connection must cost a re-run, never a
+rebuild.**
+
+The commit message must say which gates had NOT yet run at that SHA, so the
+history stays honest about what was actually verified.
+
+### Run review gates SEQUENTIALLY, not in parallel
+
+Parallel gates double the blast radius of one dropped connection. At M3
+`fidelity-auditor` and `game-feel-critic` were launched together and both died
+on the same disconnect, losing both sets of findings. Sequential costs
+wall-clock time and saves a full re-run.
+
 ### Containment check — after EVERY subagent invocation
 
 ```powershell

@@ -37,9 +37,10 @@ export function createFloorRuntime(floorIndex, rng) {
     wardens,
     // Per-FLOOR intrusion clock (section 3.4). Set ONLY here, at floor start.
     elapsedTicks: 0,
-    // Room seal state. Populated at M4; the shape exists now so death handling
-    // at M5 has something to preserve.
+    // Room seal state (section 2.4) and live room runtimes, keyed by room id.
+    // `looted` survives death; `rooms` does not, for unlooted rooms (4.1).
     looted: {},
+    rooms: {},
     rng
   };
 }
@@ -100,6 +101,22 @@ export function respawnPlayerOnFloor(floor) {
   // Arrow does not survive a death.
   floor.arrow.alive = false;
   floor.arrow.pending = false;
+}
+
+// Which room door is PIP standing on, if any. Returns the room entry with its
+// id and side so state.js can begin the zoom.
+export function doorUnderPlayer(floor) {
+  const size = TUNING.player.hitboxFloor;
+  const cx = Math.floor((floor.player.x + size / 2) / TUNING.tile);
+  const cy = Math.floor((floor.player.y + size / 2) / TUNING.tile);
+  for (const room of floor.layout.rooms) {
+    if (room.door.tx === cx && room.door.ty === cy) {
+      // Side is which way PIP steps back OUT onto the corridor.
+      const side = room.door.ty < TUNING.gridH / 2 ? 'N' : 'S';
+      return { id: room.id, tx: room.door.tx, ty: room.door.ty, side };
+    }
+  }
+  return null;
 }
 
 export function isStairsUnlocked(floor) {

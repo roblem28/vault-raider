@@ -5,7 +5,7 @@
 //
 // No DOM access. Safe to import from tests/.
 
-import { TUNING, DIRS, DIR_NEUTRAL, GEOM, UNSTICK } from '../data/tuning.js';
+import { TUNING, DIRS, DIR_NEUTRAL, DIR_COUNT, GEOM, UNSTICK } from '../data/tuning.js';
 import {
   moveAxisSeparated, applyDoorwaySnap, aabbOverlap, tileCenterPx
 } from './collision.js';
@@ -307,4 +307,212 @@ export function wardenTouchesPlayer(warden, player, inRoom) {
   const p = playerHurtBox(player, inRoom);
   const w = wardenHurtBox(warden);
   return aabbOverlap(p.x, p.y, p.w, p.h, w.x, w.y, w.w, w.h);
+}
+
+// Section 4.4 gives CRAWLER no speed of its own, only "predictable". It moves
+// slower than PIP so the floor-1 teaching monster can be walked away from.
+// INVENTED - see docs/NOTES.md M3-A1.
+const CRAWLER_SPEED_FRAC = 0.55;
+
+// --- PIP in room view ------------------------------------------------------
+
+export function updatePlayerRoom(player, input, tiles, speedMul, blockedTiles) {
+  player.prevX = player.x;
+  player.prevY = player.y;
+
+  // Section 3.9: same rule as floor view, same order. Facing first, from input,
+  // regardless of whether the move lands.
+  if (input.facingLatch !== DIR_NEUTRAL) player.facing = input.facingLatch;
+  if (input.dir === DIR_NEUTRAL) return;
+
+  const size = TUNING.player.hitboxRoom;
+  const d = DIRS[input.dir];
+  const speed = TUNING.player.speedRoom * speedMul;
+  const dx = d.dx * speed;
+  const dy = d.dy * speed;
+
+  // 6x6 box in an 8px gap is 1px of slack per side. This is where snap-assist
+  // finally earns its place, or fails to - tests/rooms.mjs measures which.
+  const snapped = applyDoorwaySnap(player.x, player.y, size, size, dx, dy, tiles, blockedTiles);
+  const moved = moveAxisSeparated(snapped.x, snapped.y, size, size, dx, dy, tiles, blockedTiles);
+  player.x = moved.x;
+  player.y = moved.y;
+}
+
+// --- CRAWLER ---------------------------------------------------------------
+//
+// Section 4.4: perimeter / wall-following, predictable, LOW dodge, 1 HP.
+// "Corners PIP in dead ends." Predictability is the point - it is the floor-1
+// teaching monster and must be readable at a glance.
+
+export function createMonster(def, rng) {
+  return {
+    type: def.type,
+    dodge: def.dodge,
+    hp: 1,
+    x: tileCenterPx(def.tx) - TUNING.monster.hurtbox / 2,
+    y: tileCenterPx(def.ty) - TUNING.monster.hurtbox / 2,
+    prevX: 0,
+    prevY: 0,
+    // Wall-following state. Starts heading East, keeping its left hand on the
+    // wall; handedness alternates by spawn parity so four CRAWLERs do not all
+    // circulate the same way.
+    dir: 2,
+    hand: (def.tx + def.ty) % 2 === 0 ? 1 : -1,
+    alive: true,
+    spawnTx: def.tx,
+    spawnTy: def.ty,
+    seed: rng.nextU32()
+  };
+}
+
+export function monsterHurtBox(monster) {
+  return { x: monster.x, y: monster.y, w: TUNING.monster.hurtbox, h: TUNING.monster.hurtbox };
+}
+
+// Turn order for a wall-follower: try to turn toward the wall-hand first, then
+// straight on, then away, then reverse. That is what produces perimeter runs
+// and dead-end cornering rather than random drift.
+function crawlerTurnOrder(dir, hand) {
+  const right = (dir + 2 * hand + DIR_COUNT) % DIR_COUNT;
+  const left = (dir - 2 * hand + DIR_COUNT) % DIR_COUNT;
+  return [right, dir, left, (dir + 4) % DIR_COUNT];
+}
+
+export function updateMonster(monster, tiles, speedMul) {
+  if (!monster.alive) return;
+  monster.prevX = monster.x;
+  monster.prevY = monster.y;
+
+  const size = TUNING.monster.hurtbox;
+  const speed = TUNING.player.speedRoom * speedMul * CRAWLER_SPEED_FRAC;
+
+  for (const candidate of crawlerTurnOrder(monster.dir, monster.hand)) {
+    const d = DIRS[candidate];
+    const moved = moveAxisSeparated(
+      monster.x, monster.y, size, size, d.dx * speed, d.dy * speed, tiles, null
+    );
+    if (moved.x !== monster.x || moved.y !== monster.y) {
+      monster.x = moved.x;
+      monster.y = moved.y;
+      monster.dir = candidate;
+      return;
+    }
+  }
+  // Fully boxed in. Reverse and try again next tick.
+  monster.dir = (monster.dir + 4) % DIR_COUNT;
+}
+
+export function monsterTouchesPlayer(monster, player) {
+  if (!monster.alive) return false;
+  const p = playerHurtBox(player, true);
+  const m = monsterHurtBox(monster);
+  return aabbOverlap(p.x, p.y, p.w, p.h, m.x, m.y, m.w, m.h);
+}
+
+// Section 4.4 dodge check: when an arrow is within dodgeLookahead and aligned
+// to the monster's axis, roll against the tier, halved for a diagonal shot
+// (section 3.10 - diagonals beat cardinals). On success, sidestep one tile.
+export function monsterDodgeCheck(monster, arrow, rng, tiles) {
+  if (!monster.alive || !arrow.alive) return false;
+
+  const mx = monster.x + TUNING.monster.hurtbox / 2;
+  const my = monster.y + TUNING.monster.hurtbox / 2;
+  const dist = Math.hypot(arrow.x - mx, arrow.y - my);
+  if (dist > TUNING.arrow.dodgeLookahead) return false;
+
+  const shot = DIRS[arrow.dir];
+  const aligned = shot.diagonal
+    ? true
+    : (shot.dx !== 0 ? Math.abs(arrow.y - my) < TUNING.tile : Math.abs(arrow.x - mx) < TUNING.tile);
+  if (!aligned) return false;
+
+  const skill = TUNING.dodgeSkill[monster.dodge];
+  const chance = skill * (shot.diagonal ? TUNING.monster.diagonalDodgeMul : 1.0);
+  if (rng.nextFloat() >= chance) return false;
+
+  // Sidestep one tile perpendicular to the shot.
+  const perp = shot.dx !== 0 ? { dx: 0, dy: 1 } : { dx: 1, dy: 0 };
+  const sign = rng.nextFloat() < 0.5 ? -1 : 1;
+  const size = TUNING.monster.hurtbox;
+  const moved = moveAxisSeparated(
+    monster.x, monster.y, size, size,
+    perp.dx * TUNING.tile * sign, perp.dy * TUNING.tile * sign, tiles, null
+  );
+  monster.x = moved.x;
+  monster.y = moved.y;
+  return true;
+}
+
+// --- Corpses ---------------------------------------------------------------
+//
+// Section 3.5, and the reason section 4.1's death handling exists.
+//
+// BLOCKING IS TILE-OCCUPANCY. LETHALITY IS AABB. They are two different tests
+// and must not be collapsed: PIP's collision box is 6x6, so an AABB-only corpse
+// leaves 2px of slack in an 8px doorway and PIP squeezes past - which silently
+// deletes the doorway seal this mechanic exists to create.
+
+export function createCorpse(x, y) {
+  return {
+    // Snapped to the tile it occupies, because occupancy is the blocking rule.
+    tx: Math.floor((x + TUNING.monster.hurtbox / 2) / TUNING.tile),
+    ty: Math.floor((y + TUNING.monster.hurtbox / 2) / TUNING.tile),
+    phase: 0,
+    phaseTicks: 0
+  };
+}
+
+export function corpseTileKey(corpse) {
+  return corpse.tx + ',' + corpse.ty;
+}
+
+// Corpses block PIP ONLY. Monsters and WARDENs walk through them
+// (TUNING.corpse.blocksMonsters / blocksWarden, both false).
+export function corpseBlockedTiles(room) {
+  const set = new Set();
+  for (const corpse of room.corpses) set.add(corpseTileKey(corpse));
+  return set;
+}
+
+export function updateCorpses(room) {
+  const phaseTicks = Math.round(TUNING.corpse.phaseSec / TUNING.dt);
+  for (let i = room.corpses.length - 1; i >= 0; i--) {
+    const corpse = room.corpses[i];
+    corpse.phaseTicks++;
+    if (corpse.phaseTicks >= phaseTicks) {
+      corpse.phaseTicks = 0;
+      corpse.phase++;
+      if (corpse.phase >= TUNING.corpse.decayPhases) room.corpses.splice(i, 1);
+    }
+  }
+}
+
+// Section 3.6, CONTESTED between two sources. Both modes implemented; decided
+// by playtest, not argument.
+export function shootCorpse(room, corpse) {
+  if (TUNING.flags.CORPSE_SHOT_MODE === 'RESET_ALL') {
+    for (const c of room.corpses) { c.phase = 0; c.phaseTicks = 0; }
+  } else {
+    corpse.phase = 0;
+    corpse.phaseTicks = 0;
+  }
+}
+
+export function corpseAtPixel(room, px, py) {
+  const tx = Math.floor(px / TUNING.tile);
+  const ty = Math.floor(py / TUNING.tile);
+  for (const corpse of room.corpses) {
+    if (corpse.tx === tx && corpse.ty === ty) return corpse;
+  }
+  return null;
+}
+
+// Lethality is AABB against PIP's hurt box, NOT tile occupancy.
+export function corpseTouchesPlayer(corpse, player) {
+  const p = playerHurtBox(player, true);
+  return aabbOverlap(
+    p.x, p.y, p.w, p.h,
+    corpse.tx * TUNING.tile, corpse.ty * TUNING.tile, TUNING.tile, TUNING.tile
+  );
 }

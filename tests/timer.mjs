@@ -111,6 +111,41 @@ console.log('\n# invulnerability actually protects');
   check('no life lost while invulnerable', state.floor.player.lives, lives);
 }
 
+console.log('\n# UNCHANGED BY ZOOM TRANSITIONS (section 8)');
+{
+  // Section 8: "The floor intrusion timer keeps running during zooms." A zoom
+  // is 24 non-interactive ticks each way; pausing the clock across them would
+  // hand the player free reconnaissance time twice per room visit.
+  const state = createGameState(SEED, 0);
+  state.floor.wardens.length = 0;
+  run(state, 60);
+
+  // Walk PIP onto the coil door to trigger the zoom for real, rather than
+  // setting the phase by hand - the point is that the REAL path keeps ticking.
+  const p = state.floor.player;
+  p.x = 10 * TUNING.tile + 2;
+  p.y = 4 * TUNING.tile + 2;
+  p.prevX = p.x;
+  p.prevY = p.y;
+  const down = { dir: 4, facingLatch: 4, fire: false };
+  let guard = 0;
+  while (state.phase === GAME_PHASES.FLOOR_VIEW && guard++ < 200) updateGame(state, down);
+  check('walking onto a door begins the zoom', state.phase, GAME_PHASES.ROOM_ZOOM_IN);
+
+  const atZoomStart = state.floor.elapsedTicks;
+  const zoomTicks = TUNING.zoom.durationTicks;
+  run(state, zoomTicks);
+  check('the clock ran through every tick of ROOM_ZOOM_IN',
+    state.floor.elapsedTicks, atZoomStart + zoomTicks);
+  check('and the zoom completed into the room', state.phase, GAME_PHASES.ROOM_VIEW);
+
+  // And again on the way out.
+  const inRoom = state.floor.elapsedTicks;
+  run(state, 120);
+  check('the clock keeps running inside the room',
+    state.floor.elapsedTicks, inRoom + 120);
+}
+
 console.log('\n# reset happens ONLY on a new floor');
 {
   const state = createGameState(SEED, 0);

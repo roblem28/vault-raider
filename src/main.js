@@ -9,7 +9,10 @@ import {
 } from './core/input.js';
 import { createLoop } from './core/loop.js';
 import { initGfx, resizeGfx } from './core/gfx.js';
+import { createAudio, initAudioOnGesture, setSirenLevel } from './core/audio.js';
 import { createGameState, updateGame } from './game/state.js';
+import { intrusionWarningLevel } from './game/room.js';
+import { floorElapsedSec } from './game/floor.js';
 import { renderFrame } from './game/render.js';
 
 // Fixed boot seed. Deterministic across reloads, which is what makes a
@@ -29,6 +32,14 @@ export function bootVaultRaider(doc, win) {
   const recorder = createInputRecorder();
   const state = createGameState(BOOT_SEED, 0);
 
+  // Section 10: AudioContext is created lazily on the FIRST USER GESTURE, never
+  // at load. Browser autoplay policy otherwise leaves the game silent with no
+  // error to explain it.
+  const audio = createAudio();
+  const wake = () => initAudioOnGesture(audio, win);
+  win.addEventListener('keydown', wake, { once: true });
+  win.addEventListener('pointerdown', wake, { once: true });
+
   function fitCanvas() {
     resizeGfx(gfx, win.innerWidth, win.innerHeight, win.devicePixelRatio);
   }
@@ -45,12 +56,16 @@ export function bootVaultRaider(doc, win) {
       const input = sampleInput(hub);
       recordInputFrame(recorder, input);
       updateGame(state, input);
+      // The siren is driven from the same value the on-screen indicator uses,
+      // so sound and picture can never disagree (section 11).
+      setSirenLevel(audio,
+        intrusionWarningLevel(state.floor.descriptor, floorElapsedSec(state.floor)));
     },
     render: (alpha) => renderFrame(gfx, state, alpha)
   });
 
   loop.start();
-  return { loop, hub, gfx, state, recorder };
+  return { loop, hub, gfx, state, recorder, audio };
 }
 
 // Guarded so importing main.js under Node (build checks, tooling) does not

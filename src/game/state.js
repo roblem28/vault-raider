@@ -15,8 +15,12 @@ import { TUNING, GAME_PHASES } from '../data/tuning.js';
 import { createRng, hashValues } from '../core/rng.js';
 import {
   createFloorRuntime, tickFloorTimer, updateFloor,
-  respawnPlayerOnFloor, floorElapsedSec
+  respawnPlayerOnFloor, floorElapsedSec, doorUnderPlayer
 } from './floor.js';
+import {
+  createRoomRuntime, updateRoom, roomEntryPosition, resetUnlootedRoom
+} from './room.js';
+import { ROOM_DEFS } from '../data/rooms.js';
 
 export function createGameState(seed, floorIndex) {
   const rng = createRng(seed);
@@ -30,7 +34,15 @@ export function createGameState(seed, floorIndex) {
     floorIndex: floorIndex || 0,
     floor: null,
     deathFreezeTicks: 0,
-    gameOver: false
+    gameOver: false,
+    // Room view. Section 8: FLOOR_VIEW <-> ROOM_ZOOM_IN -> ROOM_VIEW -> ZOOM_OUT.
+    room: null,
+    pendingRoomId: null,
+    pendingDoor: null,
+    // Zoom is measured in TICKS, never in ms (section 8).
+    zoomTicks: 0,
+    // Saved so PIP returns to the floor door he entered by.
+    floorReturn: null
   };
   startFloor(state, state.floorIndex);
   return state;
@@ -61,7 +73,33 @@ export function updateGame(state, input) {
   switch (state.phase) {
     case GAME_PHASES.FLOOR_VIEW: {
       const result = updateFloor(state.floor, input);
-      if (result.death) applyPlayerDeath(state);
+      if (result.death) { applyPlayerDeath(state); break; }
+      // Touching an unlooted room door begins the zoom.
+      const door = doorUnderPlayer(state.floor);
+      if (door && !state.floor.looted[door.id] && ROOM_DEFS[door.id]) {
+        beginRoomZoomIn(state, door);
+      }
+      break;
+    }
+    case GAME_PHASES.ROOM_ZOOM_IN: {
+      // Non-interactive. The floor clock keeps running through it - that is
+      // handled above, unconditionally, and must not be special-cased here.
+      state.zoomTicks++;
+      if (state.zoomTicks >= TUNING.zoom.durationTicks) enterRoom(state);
+      break;
+    }
+    case GAME_PHASES.ROOM_VIEW: {
+      const result = updateRoom(
+        state.room, state.floor.player, input,
+        state.floor.descriptor, floorElapsedSec(state.floor)
+      );
+      if (result.death) { applyPlayerDeath(state); break; }
+      if (result.exitDoor) beginRoomZoomOut(state);
+      break;
+    }
+    case GAME_PHASES.ROOM_ZOOM_OUT: {
+      state.zoomTicks++;
+      if (state.zoomTicks >= TUNING.zoom.durationTicks) leaveRoom(state);
       break;
     }
     case GAME_PHASES.PLAYER_DEATH: {
@@ -83,6 +121,71 @@ export function updateGame(state, input) {
   }
 }
 
+// --- room transitions ------------------------------------------------------
+//
+// Section 8: 24-tick scale-lerp, non-interactive, measured in TICKS never ms.
+// THE FLOOR INTRUSION TIMER KEEPS RUNNING THROUGHOUT. That is guaranteed
+// structurally by tickFloorTimer sitting above the phase dispatch, not by
+// anything in these functions - do not add a pause here.
+
+export function beginRoomZoomIn(state, door) {
+  state.pendingRoomId = door.id;
+  state.pendingDoor = door;
+  state.floorReturn = { x: state.floor.player.x, y: state.floor.player.y };
+  state.zoomTicks = 0;
+  transitionPhase(state, GAME_PHASES.ROOM_ZOOM_IN);
+}
+
+export function enterRoom(state) {
+  const roomId = state.pendingRoomId;
+  // An unlooted room that was already entered this life keeps its state; a
+  // fresh one is built. Section 4.1's death handling resets unlooted rooms.
+  if (!state.floor.rooms[roomId]) {
+    const def = ROOM_DEFS[roomId];
+    const entryDoor = def.doors[0];
+    state.floor.rooms[roomId] = createRoomRuntime(roomId, entryDoor, state.rng);
+  }
+  state.room = state.floor.rooms[roomId];
+  const pos = roomEntryPosition(state.room.def, state.room.entryDoor);
+  state.floor.player.x = pos.x;
+  state.floor.player.y = pos.y;
+  state.floor.player.prevX = pos.x;
+  state.floor.player.prevY = pos.y;
+  transitionPhase(state, GAME_PHASES.ROOM_VIEW);
+}
+
+export function beginRoomZoomOut(state) {
+  state.zoomTicks = 0;
+  transitionPhase(state, GAME_PHASES.ROOM_ZOOM_OUT);
+}
+
+export function leaveRoom(state) {
+  // Section 2.4: treasure taken -> room PERMANENTLY sealed.
+  if (state.room && state.room.treasureTaken) {
+    state.floor.looted[state.room.id] = true;
+    state.score += state.floor.descriptor.treasureValue;
+  }
+  state.room = null;
+  // Back to the floor door PIP came in by, nudged clear so he does not
+  // immediately re-trigger the zoom.
+  const back = state.floorReturn;
+  const door = state.pendingDoor;
+  const size = TUNING.player.hitboxFloor;
+  if (door && door.side) {
+    const out = door.side === 'N' ? { dx: 0, dy: -1 } : { dx: 0, dy: 1 };
+    state.floor.player.x = (door.tx + out.dx) * TUNING.tile + (TUNING.tile - size) / 2;
+    state.floor.player.y = (door.ty + out.dy) * TUNING.tile + (TUNING.tile - size) / 2;
+  } else if (back) {
+    state.floor.player.x = back.x;
+    state.floor.player.y = back.y;
+  }
+  state.floor.player.prevX = state.floor.player.x;
+  state.floor.player.prevY = state.floor.player.y;
+  state.pendingRoomId = null;
+  state.pendingDoor = null;
+  transitionPhase(state, GAME_PHASES.FLOOR_VIEW);
+}
+
 // SPEC 4.1 death handling. M2 implements the parts that exist.
 //
 // THE TIMER IS NOT TOUCHED HERE. Resetting or reducing it is a suicide-farm
@@ -95,8 +198,24 @@ export function applyPlayerDeath(state) {
   const player = state.floor.player;
   player.lives--;
 
-  // --- M5 goes here: clear corpses, reset unlooted rooms, keep looted ---
+  // SECTION 4.1, and the reason it exists. Skipping either half of this
+  // softlocks the run: a corpse decaying in the ONLY doorway of an unlooted
+  // room makes the stairs permanently unreachable.
+  //
+  // CLEAR ALL CORPSES on the floor, and RESET every UNLOOTED room to its entry
+  // spawn state. LOOTED ROOMS STAY LOOTED and are never rebuilt.
+  for (const roomId of Object.keys(state.floor.rooms)) {
+    if (state.floor.looted[roomId]) continue;
+    resetUnlootedRoom(state.floor.rooms[roomId]);
+  }
+  // A room in progress is abandoned; PIP respawns at the floor entrance.
+  state.room = null;
+  state.pendingRoomId = null;
+  state.pendingDoor = null;
+
   // Deliberately NOT here, ever: any write to state.floor.elapsedTicks.
+  // TUNING.flags.DEATH_RESETS_FLOOR_TIMER must stay false - true is a
+  // suicide-farm exploit.
 
   state.deathFreezeTicks = Math.round(TUNING.player.deathFreezeSec / TUNING.dt);
   transitionPhase(state, GAME_PHASES.PLAYER_DEATH);
@@ -134,6 +253,20 @@ export function hashGameState(state) {
 
   // Room looted flags, in a stable order.
   for (const room of floor.layout.rooms) nums.push(floor.looted[room.id] ? 1 : 0);
+
+  // Live room state. Everything here steers what happens next: monster
+  // positions, corpse decay phases (a corpse is lethal terrain until it
+  // vanishes), the in-room arrow, and whether a WARDEN has intruded.
+  nums.push(state.zoomTicks, state.room ? 1 : 0);
+  for (const room of floor.layout.rooms) {
+    const r = floor.rooms[room.id];
+    if (!r) { nums.push(0); continue; }
+    nums.push(1, r.treasureTaken ? 1 : 0, r.intruder ? 1 : 0);
+    for (const m of r.monsters) nums.push(m.x, m.y, m.dir, m.hp, m.alive ? 1 : 0);
+    for (const c of r.corpses) nums.push(c.tx, c.ty, c.phase, c.phaseTicks);
+    nums.push(r.arrow.alive ? 1 : 0, r.arrow.x, r.arrow.y, r.arrow.dir, r.arrow.windup);
+    if (r.intruder) nums.push(r.intruder.x, r.intruder.y);
+  }
 
   nums.push(state.score);
   // NOT included: prevX/prevY (render interpolation only), phaseTicks where it
