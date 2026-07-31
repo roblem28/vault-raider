@@ -367,9 +367,20 @@ export function updatePlayerRoom(player, input, tiles, speedMul, blockedTiles) {
 // "Corners PIP in dead ends." Predictability is the point - it is the floor-1
 // teaching monster and must be readable at a glance.
 
+// Per-archetype behaviour lives in ONE table so M6 adds entries rather than
+// editing updateMonster. Section 4.4 defines six archetypes; two exist.
+// Anything not listed falls back to CRAWLER movement and is flagged
+// `placeholder`, which tests assert on so it cannot ship silently.
+export const MONSTER_BEHAVIOUR = {
+  CRAWLER: 'wallFollow',
+  BOUNCER: 'ricochet'
+};
+
 export function createMonster(def, rng) {
   return {
     type: def.type,
+    behaviour: MONSTER_BEHAVIOUR[def.type] || 'wallFollow',
+    placeholder: !MONSTER_BEHAVIOUR[def.type],
     dodge: def.dodge,
     hp: 1,
     x: tileCenterPx(def.tx) - TUNING.monster.hurtbox / 2,
@@ -381,6 +392,10 @@ export function createMonster(def, rng) {
     // circulate the same way.
     dir: 2,
     hand: (def.tx + def.ty) % 2 === 0 ? 1 : -1,
+    // Ricochet components for BOUNCER (section 4.4). Seeded from spawn parity
+    // so four of them do not all set off in the same direction.
+    bounceX: (def.tx % 2 === 0) ? 1 : -1,
+    bounceY: (def.ty % 2 === 0) ? 1 : -1,
     alive: true,
     // Section 4.4 [v0.9]: the dodge roll happens ONCE per arrow per monster, on
     // first entry into the lookahead window. This holds the id of the arrow
@@ -409,6 +424,7 @@ export function updateMonster(monster, tiles, speedMul) {
   if (!monster.alive) return;
   monster.prevX = monster.x;
   monster.prevY = monster.y;
+  if (monster.behaviour === 'ricochet') return updateBouncer(monster, tiles, speedMul);
 
   const size = TUNING.monster.hurtbox;
   const speed = TUNING.player.speedRoom * speedMul * ARCHETYPE.crawlerSpeedFrac;
@@ -499,6 +515,69 @@ export function monsterDodgeCheck(monster, arrow, rng, tiles) {
     }
   }
   return false;
+}
+
+// Section 4.4 BOUNCER: erratic diagonal ricochet, unpredictable, hit by luck.
+// Travels on a diagonal and reflects off whatever it meets, resolving each axis
+// separately so a wall on one axis flips only that component - which is what
+// makes the path read as a ricochet rather than a bounce-straight-back.
+function updateBouncer(monster, tiles, speedMul) {
+  const size = TUNING.monster.hurtbox;
+  const speed = TUNING.player.speedRoom * speedMul * ARCHETYPE.bouncerSpeedFrac;
+  const d = DIRS[monster.dir];
+
+  const stepX = moveAxisSeparated(monster.x, monster.y, size, size, d.dx * speed, 0, tiles, null);
+  if (stepX.x === monster.x && d.dx !== 0) monster.bounceX = -monster.bounceX;
+  else monster.x = stepX.x;
+
+  const stepY = moveAxisSeparated(monster.x, monster.y, size, size, 0, d.dy * speed, tiles, null);
+  if (stepY.y === monster.y && d.dy !== 0) monster.bounceY = -monster.bounceY;
+  else monster.y = stepY.y;
+
+  // Re-derive the 8-way sector from the current signs. Diagonal only, so a
+  // BOUNCER never settles into an axis-aligned crawl.
+  monster.dir = bounceSector(monster.bounceX, monster.bounceY);
+}
+
+function bounceSector(sx, sy) {
+  if (sx > 0) return sy < 0 ? 1 : 3;
+  return sy < 0 ? 7 : 5;
+}
+
+// --- Hazards ---------------------------------------------------------------
+//
+// Section 4.5 SLIDING_BARRIER: an electrified segment on a fixed sweep period.
+// Contact kills. Pure timing.
+//
+// Written as a GENERAL hazard system, not a THE SLABS special case - THE FORGE
+// and the floor-2/3 rooms inherit it at M7 by adding entries to a room's
+// `hazards` array with no code change here.
+//
+// Position is a pure function of the room tick, so it is deterministic and
+// needs no state of its own beyond the tick: a triangle wave over periodTicks,
+// which gives a constant sweep speed and a hard reversal rather than the
+// ease-in-out of a sine. Section 11 also wants a steady sweep with no strobe.
+export function hazardOffsetTiles(hazard, roomTicks) {
+  const period = hazard.periodTicks;
+  const t = ((roomTicks + hazard.phaseTicks) % period) / period;
+  const tri = t < 0.5 ? t * 2 : 2 - t * 2;
+  return tri * hazard.travel;
+}
+
+export function hazardBox(hazard, roomTicks) {
+  const off = hazardOffsetTiles(hazard, roomTicks) * TUNING.tile;
+  return {
+    x: hazard.tx * TUNING.tile + (hazard.axis === 'x' ? off : 0),
+    y: hazard.ty * TUNING.tile + (hazard.axis === 'y' ? off : 0),
+    w: hazard.tw * TUNING.tile,
+    h: hazard.th * TUNING.tile
+  };
+}
+
+export function hazardTouchesPlayer(hazard, roomTicks, player) {
+  const b = hazardBox(hazard, roomTicks);
+  const p = playerHurtBox(player, true);
+  return aabbOverlap(p.x, p.y, p.w, p.h, b.x, b.y, b.w, b.h);
 }
 
 // --- Corpses ---------------------------------------------------------------

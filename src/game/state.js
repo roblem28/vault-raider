@@ -15,7 +15,8 @@ import { TUNING, GAME_PHASES } from '../data/tuning.js';
 import { createRng, hashValues } from '../core/rng.js';
 import {
   createFloorRuntime, tickFloorTimer, updateFloor,
-  respawnPlayerOnFloor, floorElapsedSec, doorUnderPlayer
+  respawnPlayerOnFloor, floorElapsedSec, doorUnderPlayer,
+  isStairsUnlocked, playerOnStairs
 } from './floor.js';
 import {
   createRoomRuntime, updateRoom, roomEntryPosition, resetUnlootedRoom
@@ -78,6 +79,14 @@ export function updateGame(state, input) {
       const door = doorUnderPlayer(state.floor);
       if (door && !state.floor.looted[door.id] && ROOM_DEFS[door.id]) {
         beginRoomZoomIn(state, door);
+        break;
+      }
+      // Section 2.5: all four rooms looted unlocks the stairwell. This is the
+      // single largest softlock surface in the game - if any room can become
+      // permanently unlootable, the stairs never open. Guarded by
+      // tests/floors.mjs and by the corpse clear in applyPlayerDeath.
+      if (playerOnStairs(state.floor) && isStairsUnlocked(state.floor)) {
+        transitionPhase(state, GAME_PHASES.FLOOR_CLEAR_BONUS);
       }
       break;
     }
@@ -100,6 +109,15 @@ export function updateGame(state, input) {
     case GAME_PHASES.ROOM_ZOOM_OUT: {
       state.zoomTicks++;
       if (state.zoomTicks >= TUNING.zoom.durationTicks) leaveRoom(state);
+      break;
+    }
+    case GAME_PHASES.FLOOR_CLEAR_BONUS: {
+      // The bonus MATHS is M8 (section 6's formula). M4 owns the transition
+      // only, so the floor advances and the clock resets exactly once, in
+      // startFloor. Awarding zero here rather than guessing a number.
+      if (state.phaseTicks >= TUNING.zoom.durationTicks) {
+        startFloor(state, state.floorIndex + 1);
+      }
       break;
     }
     case GAME_PHASES.PLAYER_DEATH: {

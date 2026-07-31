@@ -119,6 +119,14 @@ export function doorUnderPlayer(floor) {
   return null;
 }
 
+// Is PIP standing on the stairwell tile?
+export function playerOnStairs(floor) {
+  const size = TUNING.player.hitboxFloor;
+  const cx = Math.floor((floor.player.x + size / 2) / TUNING.tile);
+  const cy = Math.floor((floor.player.y + size / 2) / TUNING.tile);
+  return cx === floor.layout.stairs.tx && cy === floor.layout.stairs.ty;
+}
+
 export function isStairsUnlocked(floor) {
   const rooms = floor.layout.rooms;
   for (const room of rooms) if (!floor.looted[room.id]) return false;

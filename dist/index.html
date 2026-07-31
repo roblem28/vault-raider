@@ -227,7 +227,11 @@ const GEOM = {
 const ARCHETYPE = {
   // CRAWLER moves slower than PIP so the floor-1 teaching monster can be walked
   // away from. Section 4.4 calls it "predictable"; this is what makes that true.
-  crawlerSpeedFrac: 0.55
+  crawlerSpeedFrac: 0.55,
+  // BOUNCER: section 4.4 calls it "erratic", and section 5 asks for a FAST
+  // variant in THE WARRENS. Faster than CRAWLER because it cannot corner you -
+  // it is dangerous by being where you did not expect, not by pressure.
+  bouncerSpeedFrac: 0.80
 };
 
 // --- AUDIO -----------------------------------------------------------------
@@ -930,6 +934,185 @@ const ROOM_DEFS = {
     ],
     spawnOnPickup: [],
     hazards: []
+  },
+  // THE SLABS - the only pure-timing room in the game. No monsters at all, so
+  // the 1-tile door corridors are free here: the dodge-dead rule only binds
+  // where monsters live. Tallest run 26, widest 34, narrowest 1 (door only).
+  //
+  // TENSION: cross four sweeping electrified barriers with no combat option.
+  // The only resource is timing, and the floor clock is running the whole time.
+  slabs: {
+    id: 'slabs',
+    shipName: 'THE SLABS',
+    layoutIndex: 0,
+    tiles: [
+      '##########.#############################',
+      '##########.#############################',
+      '##########.#############################',
+      '##########.#############################',
+      '###..................................###',
+      '###..................................###',
+      '###..................................###',
+      '###..................................###',
+      '###.........#..............#.........###',
+      '###.........#..............#.........###',
+      '###.........#..............#.........###',
+      '###.........#..............#.........###',
+      '###.........#..............#.........###',
+      '###..................................###',
+      '###..................................###',
+      '###..................................###',
+      '###..................................###',
+      '###.........#..............#.........###',
+      '###.........#..............#.........###',
+      '###.........#..............#.........###',
+      '###.........#..............#.........###',
+      '###.........#..............#.........###',
+      '###..................................###',
+      '###..................................###',
+      '###..................................###',
+      '###..................................###',
+      '############################.###########',
+      '############################.###########',
+      '############################.###########',
+      '############################.###########',
+    ],
+    doors: [
+      { tx: 10, ty: 0, side: 'N' },
+      { tx: 28, ty: 29, side: 'S' }
+    ],
+    treasure: { tx: 20, ty: 14, type: 'coin', safeTile: true },
+    spawnOnEntry: [],
+    spawnOnPickup: [],
+    // Section 4.5 SLIDING_BARRIER: electrified segment on a fixed sweep period,
+    // contact kills, pure timing. Periods are deliberately coprime-ish so the
+    // four never settle into a single rhythm the player can memorise as one
+    // pattern.
+    hazards: [
+      { type: 'SLIDING_BARRIER', tx: 6, ty: 6, tw: 1, th: 5, axis: 'x', travel: 8, periodTicks: 150, phaseTicks: 0 },
+      { type: 'SLIDING_BARRIER', tx: 20, ty: 6, tw: 1, th: 5, axis: 'x', travel: 6, periodTicks: 130, phaseTicks: 40 },
+      { type: 'SLIDING_BARRIER', tx: 6, ty: 19, tw: 1, th: 5, axis: 'x', travel: 8, periodTicks: 170, phaseTicks: 80 },
+      { type: 'SLIDING_BARRIER', tx: 20, ty: 19, tw: 1, th: 5, axis: 'x', travel: 6, periodTicks: 110, phaseTicks: 20 }
+    ]
+  },
+
+  // THE OSSUARY - an open chamber with four pillars. BOUNCERs ricochet
+  // diagonally and need room to do it; nothing a monster can reach is narrower
+  // than 3. Tallest run 22, widest 34, narrowest in monster space 22.
+  //
+  // TENSION: the monsters move unpredictably and the room is open, so you
+  // cannot plan a route and there is nowhere to break line of sight. You react,
+  // or you leave.
+  ossuary: {
+    id: 'ossuary',
+    shipName: 'THE OSSUARY',
+    layoutIndex: 0,
+    tiles: [
+      '############################.###########',
+      '############################.###########',
+      '############################.###########',
+      '############################.###########',
+      '###..................................###',
+      '###..................................###',
+      '###..................................###',
+      '###..................................###',
+      '###..................................###',
+      '###......####..............####......###',
+      '###......####..............####......###',
+      '###......####..............####......###',
+      '###......####..............####......###',
+      '###..................................###',
+      '###..................................###',
+      '###..................................###',
+      '###..................................###',
+      '###......####..............####......###',
+      '###......####..............####......###',
+      '###......####..............####......###',
+      '###......####..............####......###',
+      '###..................................###',
+      '###..................................###',
+      '###..................................###',
+      '###..................................###',
+      '###..................................###',
+      '##########.#############################',
+      '##########.#############################',
+      '##########.#############################',
+      '##########.#############################',
+    ],
+    doors: [
+      { tx: 28, ty: 0, side: 'N' },
+      { tx: 10, ty: 29, side: 'S' }
+    ],
+    treasure: { tx: 20, ty: 14, type: 'ring', safeTile: true },
+    spawnOnEntry: [
+      { type: 'BOUNCER', tx: 6, ty: 6, dodge: 'LOW' },
+      { type: 'BOUNCER', tx: 33, ty: 6, dodge: 'LOW' },
+      { type: 'BOUNCER', tx: 6, ty: 23, dodge: 'LOW' },
+      { type: 'BOUNCER', tx: 33, ty: 23, dodge: 'LOW' }
+    ],
+    spawnOnPickup: [],
+    hazards: []
+  },
+
+  // THE WARRENS - five fast BOUNCERs in less room. Four dividers cut the
+  // chamber into loosely-joined cells with 4-wide gaps; still never below 3
+  // where a monster can go. Tallest run 30, widest 34, narrowest in monster
+  // space 8.
+  //
+  // TENSION: the same unpredictability as THE OSSUARY with more bodies and
+  // less room to be wrong in. The treasure sits dead centre, so every route in
+  // is also the route out, and every second inside raises the odds that one of
+  // them crosses it.
+  warrens: {
+    id: 'warrens',
+    shipName: 'THE WARRENS',
+    layoutIndex: 0,
+    tiles: [
+      '####################.###################',
+      '####################.###################',
+      '####################.###################',
+      '####################.###################',
+      '###..........###........###..........###',
+      '###..........###........###..........###',
+      '###..........###........###..........###',
+      '###..........###........###..........###',
+      '###..........###........###..........###',
+      '###..........###........###..........###',
+      '###..........###........###..........###',
+      '###..........###........###..........###',
+      '###..........###........###..........###',
+      '###..................................###',
+      '###..................................###',
+      '###..................................###',
+      '###..................................###',
+      '###..........###........###..........###',
+      '###..........###........###..........###',
+      '###..........###........###..........###',
+      '###..........###........###..........###',
+      '###..........###........###..........###',
+      '###..........###........###..........###',
+      '###..........###........###..........###',
+      '###..........###........###..........###',
+      '###..........###........###..........###',
+      '####################.###################',
+      '####################.###################',
+      '####################.###################',
+      '####################.###################',
+    ],
+    doors: [
+      { tx: 20, ty: 0, side: 'N' },
+      { tx: 20, ty: 29, side: 'S' }
+    ],
+    treasure: { tx: 20, ty: 14, type: 'chest', safeTile: true },
+    spawnOnEntry: [
+      { type: 'BOUNCER', tx: 6, ty: 6, dodge: 'LOW' },
+      { type: 'BOUNCER', tx: 33, ty: 6, dodge: 'LOW' },
+      { type: 'BOUNCER', tx: 6, ty: 23, dodge: 'LOW' },
+      { type: 'BOUNCER', tx: 33, ty: 23, dodge: 'LOW' },
+      { type: 'BOUNCER', tx: 20, ty: 20, dodge: 'LOW' }
+    ],
+    spawnOnPickup: [],
+    hazards: []
   }
 };
 
@@ -1472,9 +1655,20 @@ function updatePlayerRoom(player, input, tiles, speedMul, blockedTiles) {
 // "Corners PIP in dead ends." Predictability is the point - it is the floor-1
 // teaching monster and must be readable at a glance.
 
+// Per-archetype behaviour lives in ONE table so M6 adds entries rather than
+// editing updateMonster. Section 4.4 defines six archetypes; two exist.
+// Anything not listed falls back to CRAWLER movement and is flagged
+// `placeholder`, which tests assert on so it cannot ship silently.
+const MONSTER_BEHAVIOUR = {
+  CRAWLER: 'wallFollow',
+  BOUNCER: 'ricochet'
+};
+
 function createMonster(def, rng) {
   return {
     type: def.type,
+    behaviour: MONSTER_BEHAVIOUR[def.type] || 'wallFollow',
+    placeholder: !MONSTER_BEHAVIOUR[def.type],
     dodge: def.dodge,
     hp: 1,
     x: tileCenterPx(def.tx) - TUNING.monster.hurtbox / 2,
@@ -1486,6 +1680,10 @@ function createMonster(def, rng) {
     // circulate the same way.
     dir: 2,
     hand: (def.tx + def.ty) % 2 === 0 ? 1 : -1,
+    // Ricochet components for BOUNCER (section 4.4). Seeded from spawn parity
+    // so four of them do not all set off in the same direction.
+    bounceX: (def.tx % 2 === 0) ? 1 : -1,
+    bounceY: (def.ty % 2 === 0) ? 1 : -1,
     alive: true,
     // Section 4.4 [v0.9]: the dodge roll happens ONCE per arrow per monster, on
     // first entry into the lookahead window. This holds the id of the arrow
@@ -1514,6 +1712,7 @@ function updateMonster(monster, tiles, speedMul) {
   if (!monster.alive) return;
   monster.prevX = monster.x;
   monster.prevY = monster.y;
+  if (monster.behaviour === 'ricochet') return updateBouncer(monster, tiles, speedMul);
 
   const size = TUNING.monster.hurtbox;
   const speed = TUNING.player.speedRoom * speedMul * ARCHETYPE.crawlerSpeedFrac;
@@ -1604,6 +1803,69 @@ function monsterDodgeCheck(monster, arrow, rng, tiles) {
     }
   }
   return false;
+}
+
+// Section 4.4 BOUNCER: erratic diagonal ricochet, unpredictable, hit by luck.
+// Travels on a diagonal and reflects off whatever it meets, resolving each axis
+// separately so a wall on one axis flips only that component - which is what
+// makes the path read as a ricochet rather than a bounce-straight-back.
+function updateBouncer(monster, tiles, speedMul) {
+  const size = TUNING.monster.hurtbox;
+  const speed = TUNING.player.speedRoom * speedMul * ARCHETYPE.bouncerSpeedFrac;
+  const d = DIRS[monster.dir];
+
+  const stepX = moveAxisSeparated(monster.x, monster.y, size, size, d.dx * speed, 0, tiles, null);
+  if (stepX.x === monster.x && d.dx !== 0) monster.bounceX = -monster.bounceX;
+  else monster.x = stepX.x;
+
+  const stepY = moveAxisSeparated(monster.x, monster.y, size, size, 0, d.dy * speed, tiles, null);
+  if (stepY.y === monster.y && d.dy !== 0) monster.bounceY = -monster.bounceY;
+  else monster.y = stepY.y;
+
+  // Re-derive the 8-way sector from the current signs. Diagonal only, so a
+  // BOUNCER never settles into an axis-aligned crawl.
+  monster.dir = bounceSector(monster.bounceX, monster.bounceY);
+}
+
+function bounceSector(sx, sy) {
+  if (sx > 0) return sy < 0 ? 1 : 3;
+  return sy < 0 ? 7 : 5;
+}
+
+// --- Hazards ---------------------------------------------------------------
+//
+// Section 4.5 SLIDING_BARRIER: an electrified segment on a fixed sweep period.
+// Contact kills. Pure timing.
+//
+// Written as a GENERAL hazard system, not a THE SLABS special case - THE FORGE
+// and the floor-2/3 rooms inherit it at M7 by adding entries to a room's
+// `hazards` array with no code change here.
+//
+// Position is a pure function of the room tick, so it is deterministic and
+// needs no state of its own beyond the tick: a triangle wave over periodTicks,
+// which gives a constant sweep speed and a hard reversal rather than the
+// ease-in-out of a sine. Section 11 also wants a steady sweep with no strobe.
+function hazardOffsetTiles(hazard, roomTicks) {
+  const period = hazard.periodTicks;
+  const t = ((roomTicks + hazard.phaseTicks) % period) / period;
+  const tri = t < 0.5 ? t * 2 : 2 - t * 2;
+  return tri * hazard.travel;
+}
+
+function hazardBox(hazard, roomTicks) {
+  const off = hazardOffsetTiles(hazard, roomTicks) * TUNING.tile;
+  return {
+    x: hazard.tx * TUNING.tile + (hazard.axis === 'x' ? off : 0),
+    y: hazard.ty * TUNING.tile + (hazard.axis === 'y' ? off : 0),
+    w: hazard.tw * TUNING.tile,
+    h: hazard.th * TUNING.tile
+  };
+}
+
+function hazardTouchesPlayer(hazard, roomTicks, player) {
+  const b = hazardBox(hazard, roomTicks);
+  const p = playerHurtBox(player, true);
+  return aabbOverlap(p.x, p.y, p.w, p.h, b.x, b.y, b.w, b.h);
 }
 
 // --- Corpses ---------------------------------------------------------------
@@ -1715,6 +1977,9 @@ function createRoomRuntime(roomId, entryDoor, rng) {
     // leaving the room.
     intruder: null,
     exitedBy: null,
+    // Room-local tick. Hazard sweeps are a pure function of this (section 4.5),
+    // so they need no state of their own and stay deterministic.
+    ticks: 0,
     rng
   };
 }
@@ -1767,6 +2032,7 @@ function spawnIntrusionWarden(room, descriptor) {
 
 function updateRoom(room, player, arrow, input, descriptor, elapsedSec) {
   const speedMul = descriptor.speedMul;
+  room.ticks++;
 
   // Corpses block PIP ONLY, by TILE OCCUPANCY (section 3.5). Monsters and the
   // intruding WARDEN are never given this set.
@@ -1844,6 +2110,10 @@ function updateRoom(room, player, arrow, input, descriptor, elapsedSec) {
       if (corpseTouchesPlayer(corpse, player)) death = true;
     }
     if (room.intruder && wardenTouchesPlayer(room.intruder, player, true)) death = true;
+    // Section 4.5: hazard contact kills. Pure timing, no counterplay.
+    for (const hazard of room.def.hazards) {
+      if (hazardTouchesPlayer(hazard, room.ticks, player)) death = true;
+    }
   }
 
   const door = playerOnDoor(room, player);
@@ -1864,6 +2134,9 @@ function resetUnlootedRoom(room) {
   room.corpses.length = 0;
   room.intruder = null;
   room.treasureTaken = false;
+  // Hazard sweeps restart with the room, so a death does not hand the player a
+  // barrier frozen mid-cycle.
+  room.ticks = 0;
 }
 
 function roomHasIntruder(room) {
@@ -2000,6 +2273,14 @@ function doorUnderPlayer(floor) {
   return null;
 }
 
+// Is PIP standing on the stairwell tile?
+function playerOnStairs(floor) {
+  const size = TUNING.player.hitboxFloor;
+  const cx = Math.floor((floor.player.x + size / 2) / TUNING.tile);
+  const cy = Math.floor((floor.player.y + size / 2) / TUNING.tile);
+  return cx === floor.layout.stairs.tx && cy === floor.layout.stairs.ty;
+}
+
 function isStairsUnlocked(floor) {
   const rooms = floor.layout.rooms;
   for (const room of rooms) if (!floor.looted[room.id]) return false;
@@ -2081,6 +2362,14 @@ function updateGame(state, input) {
       const door = doorUnderPlayer(state.floor);
       if (door && !state.floor.looted[door.id] && ROOM_DEFS[door.id]) {
         beginRoomZoomIn(state, door);
+        break;
+      }
+      // Section 2.5: all four rooms looted unlocks the stairwell. This is the
+      // single largest softlock surface in the game - if any room can become
+      // permanently unlootable, the stairs never open. Guarded by
+      // tests/floors.mjs and by the corpse clear in applyPlayerDeath.
+      if (playerOnStairs(state.floor) && isStairsUnlocked(state.floor)) {
+        transitionPhase(state, GAME_PHASES.FLOOR_CLEAR_BONUS);
       }
       break;
     }
@@ -2103,6 +2392,15 @@ function updateGame(state, input) {
     case GAME_PHASES.ROOM_ZOOM_OUT: {
       state.zoomTicks++;
       if (state.zoomTicks >= TUNING.zoom.durationTicks) leaveRoom(state);
+      break;
+    }
+    case GAME_PHASES.FLOOR_CLEAR_BONUS: {
+      // The bonus MATHS is M8 (section 6's formula). M4 owns the transition
+      // only, so the floor advances and the clock resets exactly once, in
+      // startFloor. Awarding zero here rather than guessing a number.
+      if (state.phaseTicks >= TUNING.zoom.durationTicks) {
+        startFloor(state, state.floorIndex + 1);
+      }
       break;
     }
     case GAME_PHASES.PLAYER_DEATH: {

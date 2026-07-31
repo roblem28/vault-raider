@@ -171,7 +171,11 @@ export const GEOM = {
 export const ARCHETYPE = {
   // CRAWLER moves slower than PIP so the floor-1 teaching monster can be walked
   // away from. Section 4.4 calls it "predictable"; this is what makes that true.
-  crawlerSpeedFrac: 0.55
+  crawlerSpeedFrac: 0.55,
+  // BOUNCER: section 4.4 calls it "erratic", and section 5 asks for a FAST
+  // variant in THE WARRENS. Faster than CRAWLER because it cannot corner you -
+  // it is dangerous by being where you did not expect, not by pressure.
+  bouncerSpeedFrac: 0.80
 };
 
 // --- AUDIO -----------------------------------------------------------------

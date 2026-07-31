@@ -663,6 +663,93 @@ or deleting before M6 adds more archetypes.
 
 ---
 
+## M4 — Floor 1 content (2026-07-31)
+
+### M4-R1 — the room design table
+
+Reference for M7, when eight more rooms get authored. **Narrowest is measured
+where a monster can reach**, not overall — every room's door corridors are
+1 tile, which is free in a room with no monsters and irrelevant in one where
+monsters never go there.
+
+| Room | Contents | Tallest | Widest | Narrowest (monster space) | Shape |
+|---|---|---|---|---|---|
+| `THE COIL` | 4× CRAWLER | 30 | 34 | 2 | serpentine, 4 lanes + 3 pinches |
+| `THE SLABS` | 4× SLIDING_BARRIER, no monsters | 26 | 34 | n/a | one open chamber, 4 stubs |
+| `THE OSSUARY` | 4× BOUNCER | 22 | 34 | 22 | open chamber, 4 pillars |
+| `THE WARRENS` | 5× BOUNCER | 30 | 34 | 8 | 4 dividers, loose cells |
+
+**Tension lines** — what decision the room asks of the player:
+
+- **THE COIL** — *A maze under a clock. The pinches are shortcuts that cost you
+  the ability to retreat; the long way round is safe and expensive.*
+- **THE SLABS** — *Cross four sweeping electrified barriers with no combat
+  option. The only resource is timing, and the floor clock is running.*
+- **THE OSSUARY** — *The monsters move unpredictably and the room is open, so
+  you cannot plan a route and there is nowhere to break line of sight. React,
+  or leave.*
+- **THE WARRENS** — *The same unpredictability with more bodies and less room
+  to be wrong in. The treasure is dead centre, so every route in is also the
+  route out.*
+
+**The v1.0 dodge ruling shaped these.** 1-tall corridors are dodge-dead at every
+tier, so no monster spawns in one and nothing a monster can reach is narrower
+than 3 in THE OSSUARY or THE WARRENS. THE SLABS uses 1-tile geometry freely
+**because it has no monsters at all** — hazards are not monsters and do not
+dodge, so the constraint does not bind there. That is a deliberate use of the
+shape, not an oversight.
+
+Also worth carrying to M7: **a 2-tall lane no longer behaves specially.** After
+the retry-opposite ruling it dodges exactly like open space, so THE COIL's
+signature shape is no longer doing anything mechanical that a wide room does
+not. If M7 wants narrowness to *mean* something, it has to be 1-tall, and that
+turns dodge off entirely.
+
+### M4-A1 — INVENTED CONSTANT: `ARCHETYPE.bouncerSpeedFrac: 0.80`
+
+Same class as `crawlerSpeedFrac`. §4.4 calls BOUNCER "erratic" and §5 asks for a
+*fast* variant in THE WARRENS, but gives no number. Faster than CRAWLER because
+a BOUNCER cannot corner you — it is dangerous by being where you did not expect,
+not by applying pressure. Feel-gate knob.
+
+### M4-D1 — SPEC ORDERING CONFLICT: M4 needs BOUNCER, §14 schedules it at M6
+
+§14's M4 row is "all 4 Floor-1 rooms"; §5 says THE OSSUARY and THE WARRENS
+contain BOUNCERs; §14's M6 row is "Remaining archetypes: BOUNCER DROPPER
+STALKER BRUTE BLINKER". M4 cannot deliver its own stated validation — *loot
+floor 1, descend* — without a monster §14 schedules two milestones later.
+
+Resolved by building **BOUNCER only**, because M4 needs it, and leaving the
+other four to M6. The seam is a `MONSTER_BEHAVIOUR` table: M6 adds entries
+rather than editing `updateMonster`, and any archetype not in the table falls
+back to CRAWLER movement with `placeholder: true` set on the monster so it
+cannot ship silently.
+
+Flagging rather than silently choosing. If you would rather M4 shipped those two
+rooms with CRAWLERs and M6 swapped them, say so — the room data is already
+final either way.
+
+### M4-D2 — the floor-clear BONUS is M8, the transition is M4
+
+`FLOOR_CLEAR_BONUS` awards **zero** right now. §14 puts scoring and the
+time-bonus formula at M8; M4 owns only the phase transition, so the floor
+advances and the clock resets exactly once, in `startFloor`. Awarding a guessed
+number would be worse than awarding none.
+
+### M4-F1 — a test regressed because the game got bigger, not because it broke
+
+`floors.mjs`'s doorway matrix started failing 54 of 1368 the moment three more
+rooms became live: PIP walking onto a room door now begins a zoom, so those
+three door tiles stopped being inert floor and the traversal left `FLOOR_VIEW`
+mid-measurement. Nothing about the geometry had changed.
+
+Fixed by excluding room door tiles from both gaps and approaches — the identical
+correction `rooms.mjs` needed at M3 for the same reason. Worth noting the shape:
+**a passing test can start failing because a neighbouring system came online**,
+and the first instinct of blaming the new code would have been wrong twice.
+
+---
+
 ## Withdrawn reviewer findings
 
 Tracked per CLAUDE.md: if the withdrawal rate stays high, the agent file needs

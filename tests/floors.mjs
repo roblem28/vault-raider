@@ -10,9 +10,11 @@
 //
 // Zero dependencies. Node only, no DOM.
 
-import { TUNING, TILE_CHARS } from '../src/data/tuning.js';
+import { TUNING, TILE_CHARS, GAME_PHASES } from '../src/data/tuning.js';
 import { FLOOR_LAYOUTS, floorDescriptorFor } from '../src/data/floors.js';
 import { createGameState, updateGame } from '../src/game/state.js';
+import { isStairsUnlocked } from '../src/game/floor.js';
+import { ROOM_DEFS } from '../src/data/rooms.js';
 import { advanceAccumulator } from '../src/core/loop.js';
 
 let failures = 0;
@@ -241,11 +243,21 @@ console.log('\n# EVERY 1-tile gap is passable, every approach, 60 and 30 Hz');
   const BOX = TUNING.player.hitboxFloor;
 
   for (const layout of FLOOR_LAYOUTS) {
+    // Room door tiles are excluded from BOTH gaps and approaches. Standing on
+    // one begins the zoom into that room, so a traversal starting or ending
+    // there measures the room-entry path, not the doorway geometry.
+    //
+    // This bit at M4: three more Floor-1 rooms became live, so three doors that
+    // had previously been inert floor tiles started triggering zooms and 54 of
+    // 1368 combinations "failed". Nothing about the geometry had changed.
+    const isRoomDoor = (tx, ty) =>
+      layout.rooms.some((r) => r.door.tx === tx && r.door.ty === ty);
+
     // A 1-tile gap: a floor tile walled on both sides of one axis.
     const gaps = [];
     for (let ty = 0; ty < layout.mask.length; ty++) {
       for (let tx = 0; tx < layout.mask[ty].length; tx++) {
-        if (!isFloor(layout.mask, tx, ty)) continue;
+        if (!isFloor(layout.mask, tx, ty) || isRoomDoor(tx, ty)) continue;
         const vert = !isFloor(layout.mask, tx - 1, ty) && !isFloor(layout.mask, tx + 1, ty);
         const horz = !isFloor(layout.mask, tx, ty - 1) && !isFloor(layout.mask, tx, ty + 1);
         if (vert || horz) gaps.push({ tx, ty });
@@ -261,7 +273,7 @@ console.log('\n# EVERY 1-tile gap is passable, every approach, 60 and 30 Hz');
         // The approach tile sits opposite the direction of travel.
         const ax = gap.tx - dx;
         const ay = gap.ty - dy;
-        if (!isFloor(layout.mask, ax, ay)) { skipped++; continue; }
+        if (!isFloor(layout.mask, ax, ay) || isRoomDoor(ax, ay)) { skipped++; continue; }
 
         for (const offset of OFFSETS) {
           for (const hz of RATES) {
@@ -345,6 +357,80 @@ console.log('\n# no barrier grants PERMANENT immunity (section 4.3.1)');
       never.length === 0, `never caught on seed(s) ${never.join(', ')}`);
     console.log(`     worst catch ${(worst / 60).toFixed(1)}s of ${LIMIT_TICKS / 60}s budget`);
   }
+}
+
+console.log('\n# M4: seal all four rooms, unlock the stairs, descend (section 2)');
+{
+  // The milestone's own validation: loot floor 1, descend. Driven through the
+  // REAL path - walk onto each door, zoom, take the treasure, walk out, zoom -
+  // rather than setting looted flags by hand, because the flags are the thing
+  // under test.
+  const state = createGameState(0x4004, 0);
+  state.floor.wardens.length = 0;
+  const p = state.floor.player;
+  const T = TUNING.tile;
+  p.invulnTicks = 1e9;
+
+  const run = (n, input) => { for (let i = 0; i < n; i++) updateGame(state, input); };
+  const NEUTRAL = { dir: -1, facingLatch: -1, fire: false };
+
+  check('stairs start locked', isStairsUnlocked(state.floor), false);
+
+  for (const room of FLOOR_LAYOUTS[0].rooms) {
+    // Teleport to the door, which the passability matrix already proves is
+    // walkable; this test is about sealing, not traversal.
+    p.x = room.door.tx * T + (T - TUNING.player.hitboxFloor) / 2;
+    p.y = room.door.ty * T + (T - TUNING.player.hitboxFloor) / 2;
+    p.prevX = p.x;
+    p.prevY = p.y;
+    updateGame(state, NEUTRAL);
+    assert(`${room.id}: touching the door begins the zoom`,
+      state.phase === GAME_PHASES.ROOM_ZOOM_IN, `phase ${state.phase}`);
+    run(TUNING.zoom.durationTicks + 1, NEUTRAL);
+    assert(`${room.id}: zoom landed in the room`, state.phase === GAME_PHASES.ROOM_VIEW);
+
+    // Take the treasure, then leave by a door.
+    const def = ROOM_DEFS[room.id];
+    p.x = def.treasure.tx * T + 1;
+    p.y = def.treasure.ty * T + 1;
+    updateGame(state, NEUTRAL);
+    check(`${room.id}: treasure taken`, state.floor.rooms[room.id].treasureTaken, true);
+
+    p.x = def.doors[0].tx * T + 1;
+    p.y = def.doors[0].ty * T + 1;
+    updateGame(state, NEUTRAL);
+    run(TUNING.zoom.durationTicks + 2, NEUTRAL);
+    check(`${room.id}: back on the floor`, state.phase, GAME_PHASES.FLOOR_VIEW);
+    check(`${room.id}: PERMANENTLY sealed`, state.floor.looted[room.id], true);
+  }
+
+  check('all four looted -> stairs unlock', isStairsUnlocked(state.floor), true);
+
+  // A sealed room must not re-open when PIP walks over its door again.
+  const first = FLOOR_LAYOUTS[0].rooms[0];
+  p.x = first.door.tx * T + 1;
+  p.y = first.door.ty * T + 1;
+  updateGame(state, NEUTRAL);
+  check('a sealed room does not re-open', state.phase, GAME_PHASES.FLOOR_VIEW);
+
+  // Descend.
+  const clockBefore = state.floor.elapsedTicks;
+  const st = FLOOR_LAYOUTS[0].stairs;
+  p.x = st.tx * T + 1;
+  p.y = st.ty * T + 1;
+  updateGame(state, NEUTRAL);
+  check('standing on unlocked stairs starts the floor clear',
+    state.phase, GAME_PHASES.FLOOR_CLEAR_BONUS);
+  assert('the clock kept running into the bonus phase',
+    state.floor.elapsedTicks > clockBefore);
+
+  run(TUNING.zoom.durationTicks + 2, NEUTRAL);
+  check('descended to floor 2', state.floorIndex, 1);
+  check('back in floor view', state.phase, GAME_PHASES.FLOOR_VIEW);
+  // Section 3.4: startFloor is the ONLY reset, and a descent is exactly that.
+  assert('the floor clock reset for the new floor, and only here',
+    state.floor.elapsedTicks < clockBefore, `${state.floor.elapsedTicks}`);
+  check('the new floor starts unlooted', isStairsUnlocked(state.floor), false);
 }
 
 console.log('\n# floor descriptor indexing (section 2.1)');

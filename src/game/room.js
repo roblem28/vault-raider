@@ -17,7 +17,8 @@ import {
   createMonster, updateMonster, monsterTouchesPlayer, monsterDodgeCheck,
   monsterHurtBox, createCorpse, updateCorpses, corpseBlockedTiles,
   corpseAtPixel, shootCorpse, corpseTouchesPlayer,
-  createWarden, updateWarden, wardenTouchesPlayer, playerHurtBox
+  createWarden, updateWarden, wardenTouchesPlayer, playerHurtBox,
+  hazardTouchesPlayer
 } from './entities.js';
 
 export function createRoomRuntime(roomId, entryDoor, rng) {
@@ -42,6 +43,9 @@ export function createRoomRuntime(roomId, entryDoor, rng) {
     // leaving the room.
     intruder: null,
     exitedBy: null,
+    // Room-local tick. Hazard sweeps are a pure function of this (section 4.5),
+    // so they need no state of their own and stay deterministic.
+    ticks: 0,
     rng
   };
 }
@@ -94,6 +98,7 @@ export function spawnIntrusionWarden(room, descriptor) {
 
 export function updateRoom(room, player, arrow, input, descriptor, elapsedSec) {
   const speedMul = descriptor.speedMul;
+  room.ticks++;
 
   // Corpses block PIP ONLY, by TILE OCCUPANCY (section 3.5). Monsters and the
   // intruding WARDEN are never given this set.
@@ -171,6 +176,10 @@ export function updateRoom(room, player, arrow, input, descriptor, elapsedSec) {
       if (corpseTouchesPlayer(corpse, player)) death = true;
     }
     if (room.intruder && wardenTouchesPlayer(room.intruder, player, true)) death = true;
+    // Section 4.5: hazard contact kills. Pure timing, no counterplay.
+    for (const hazard of room.def.hazards) {
+      if (hazardTouchesPlayer(hazard, room.ticks, player)) death = true;
+    }
   }
 
   const door = playerOnDoor(room, player);
@@ -191,6 +200,9 @@ export function resetUnlootedRoom(room) {
   room.corpses.length = 0;
   room.intruder = null;
   room.treasureTaken = false;
+  // Hazard sweeps restart with the room, so a death does not hand the player a
+  // barrier frozen mid-cycle.
+  room.ticks = 0;
 }
 
 export function roomHasIntruder(room) {
