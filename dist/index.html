@@ -1104,12 +1104,15 @@ const ROOM_DEFS = {
       { tx: 20, ty: 29, side: 'S' }
     ],
     treasure: { tx: 20, ty: 14, type: 'chest', safeTile: true },
+    // Section 5 specifies 5x BOUNCER (FAST) here, against THE OSSUARY's plain
+    // four. speedFrac is the section 7.2 per-spawn override - without it these
+    // were byte-identical to THE OSSUARY's and the "fast" qualifier was a lie.
     spawnOnEntry: [
-      { type: 'BOUNCER', tx: 6, ty: 6, dodge: 'LOW' },
-      { type: 'BOUNCER', tx: 33, ty: 6, dodge: 'LOW' },
-      { type: 'BOUNCER', tx: 6, ty: 23, dodge: 'LOW' },
-      { type: 'BOUNCER', tx: 33, ty: 23, dodge: 'LOW' },
-      { type: 'BOUNCER', tx: 20, ty: 20, dodge: 'LOW' }
+      { type: 'BOUNCER', tx: 6, ty: 6, dodge: 'LOW', speedFrac: 1.10 },
+      { type: 'BOUNCER', tx: 33, ty: 6, dodge: 'LOW', speedFrac: 1.10 },
+      { type: 'BOUNCER', tx: 6, ty: 23, dodge: 'LOW', speedFrac: 1.10 },
+      { type: 'BOUNCER', tx: 33, ty: 23, dodge: 'LOW', speedFrac: 1.10 },
+      { type: 'BOUNCER', tx: 20, ty: 20, dodge: 'LOW', speedFrac: 1.10 }
     ],
     spawnOnPickup: [],
     hazards: []
@@ -1659,9 +1662,19 @@ function updatePlayerRoom(player, input, tiles, speedMul, blockedTiles) {
 // editing updateMonster. Section 4.4 defines six archetypes; two exist.
 // Anything not listed falls back to CRAWLER movement and is flagged
 // `placeholder`, which tests assert on so it cannot ship silently.
+// Behaviour is keyed to a FUNCTION, not a string tested by an if. The M4 audit
+// caught the earlier version claiming "M6 adds entries rather than editing
+// updateMonster" while dispatching on `if (behaviour === 'ricochet')` with the
+// CRAWLER logic inlined - which would have required editing updateMonster for
+// every one of M6's four archetypes. Now it genuinely does not.
 const MONSTER_BEHAVIOUR = {
   CRAWLER: 'wallFollow',
   BOUNCER: 'ricochet'
+};
+
+const BEHAVIOUR_FN = {
+  wallFollow: updateCrawler,
+  ricochet: updateBouncer
 };
 
 function createMonster(def, rng) {
@@ -1669,6 +1682,7 @@ function createMonster(def, rng) {
     type: def.type,
     behaviour: MONSTER_BEHAVIOUR[def.type] || 'wallFollow',
     placeholder: !MONSTER_BEHAVIOUR[def.type],
+    speedFrac: def.speedFrac || 0,
     dodge: def.dodge,
     hp: 1,
     x: tileCenterPx(def.tx) - TUNING.monster.hurtbox / 2,
@@ -1712,8 +1726,11 @@ function updateMonster(monster, tiles, speedMul) {
   if (!monster.alive) return;
   monster.prevX = monster.x;
   monster.prevY = monster.y;
-  if (monster.behaviour === 'ricochet') return updateBouncer(monster, tiles, speedMul);
+  const fn = BEHAVIOUR_FN[monster.behaviour] || updateCrawler;
+  return fn(monster, tiles, speedMul);
+}
 
+function updateCrawler(monster, tiles, speedMul) {
   const size = TUNING.monster.hurtbox;
   const speed = TUNING.player.speedRoom * speedMul * ARCHETYPE.crawlerSpeedFrac;
 
@@ -1811,7 +1828,11 @@ function monsterDodgeCheck(monster, arrow, rng, tiles) {
 // makes the path read as a ricochet rather than a bounce-straight-back.
 function updateBouncer(monster, tiles, speedMul) {
   const size = TUNING.monster.hurtbox;
-  const speed = TUNING.player.speedRoom * speedMul * ARCHETYPE.bouncerSpeedFrac;
+  // Section 5 asks for FAST bouncers in THE WARRENS. speedFrac is an optional
+  // per-spawn override in the section 7.2 room schema; without it the archetype
+  // default applies, so the two rooms are no longer identical.
+  const frac = monster.speedFrac || ARCHETYPE.bouncerSpeedFrac;
+  const speed = TUNING.player.speedRoom * speedMul * frac;
   const d = DIRS[monster.dir];
 
   const stepX = moveAxisSeparated(monster.x, monster.y, size, size, d.dx * speed, 0, tiles, null);
@@ -2575,7 +2596,11 @@ function hashGameState(state) {
   for (const room of floor.layout.rooms) {
     const r = floor.rooms[room.id];
     if (!r) { nums.push(0); continue; }
-    nums.push(1, r.treasureTaken ? 1 : 0, r.intruder ? 1 : 0);
+    // r.ticks drives every SLIDING_BARRIER position (section 4.5). THE SLABS
+    // has no monsters and no corpses, so without this its entire per-room hash
+    // contribution is three constant booleans and two replays could diverge on
+    // where the barriers are while hashing identical.
+    nums.push(1, r.treasureTaken ? 1 : 0, r.intruder ? 1 : 0, r.ticks);
     for (const m of r.monsters) {
       nums.push(m.x, m.y, m.dir, m.hp, m.alive ? 1 : 0, m.dodgedArrowId);
     }
@@ -2828,6 +2853,8 @@ const PAL_CORPSE_HATCH = '#c8a0b0';
 const PAL_TREASURE = '#f0c840';
 const PAL_SAFE = '#2a4a3a';
 const PAL_WARN = '#e04030';
+const PAL_HAZARD = '#e0d040';
+const PAL_HAZARD_EDGE = '#f8f0c0';
 
 const HUD_TEXT_PX = 6;
 const HUD_MARGIN = 3;
@@ -2896,6 +2923,24 @@ function renderRoomView(gfx, state, alpha) {
 
   for (const door of room.def.doors) {
     gfxFillRect(gfx, door.tx * t, door.ty * t, t, t, PAL_DOOR);
+  }
+
+  // SLIDING_BARRIERs (section 4.5). These were invisible until the M4 audit
+  // caught it: THE SLABS is built entirely around them and has no monsters, so
+  // an undrawn hazard made it a room where PIP dies to nothing he can see.
+  //
+  // Section 11: the sweep is a steady triangle wave with no strobe, and the
+  // barrier carries hatched cross-bars so it is not conveyed by hue alone.
+  for (const hazard of room.def.hazards) {
+    const b = hazardBox(hazard, room.ticks);
+    gfxFillRect(gfx, Math.round(b.x), Math.round(b.y), b.w, b.h, PAL_HAZARD);
+    // Bright caps at both ends give it a silhouette distinct from the treasure,
+    // which shares its hue family.
+    gfxFillRect(gfx, Math.round(b.x), Math.round(b.y), b.w, 2, PAL_HAZARD_EDGE);
+    gfxFillRect(gfx, Math.round(b.x), Math.round(b.y + b.h - 2), b.w, 2, PAL_HAZARD_EDGE);
+    for (let i = 3; i < b.h - 3; i += 3) {
+      gfxFillRect(gfx, Math.round(b.x), Math.round(b.y + i), b.w, 1, PAL_HAZARD_EDGE);
+    }
   }
 
   // Treasure and its safe tile. Section 3.7 - standing here makes PIP

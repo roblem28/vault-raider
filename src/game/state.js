@@ -292,7 +292,11 @@ export function hashGameState(state) {
   for (const room of floor.layout.rooms) {
     const r = floor.rooms[room.id];
     if (!r) { nums.push(0); continue; }
-    nums.push(1, r.treasureTaken ? 1 : 0, r.intruder ? 1 : 0);
+    // r.ticks drives every SLIDING_BARRIER position (section 4.5). THE SLABS
+    // has no monsters and no corpses, so without this its entire per-room hash
+    // contribution is three constant booleans and two replays could diverge on
+    // where the barriers are while hashing identical.
+    nums.push(1, r.treasureTaken ? 1 : 0, r.intruder ? 1 : 0, r.ticks);
     for (const m of r.monsters) {
       nums.push(m.x, m.y, m.dir, m.hp, m.alive ? 1 : 0, m.dodgedArrowId);
     }

@@ -7,6 +7,7 @@
 
 import { TUNING, DIRS, GAME_PHASES } from '../data/tuning.js';
 import { intrusionWarningLevel, playerOnSafeTile } from './room.js';
+import { hazardBox } from './entities.js';
 import {
   gfxBeginFrame, gfxFillRect, gfxStrokeRect, gfxDrawDebugText, gfxEndFrame
 } from '../core/gfx.js';
@@ -33,6 +34,8 @@ const PAL_CORPSE_HATCH = '#c8a0b0';
 const PAL_TREASURE = '#f0c840';
 const PAL_SAFE = '#2a4a3a';
 const PAL_WARN = '#e04030';
+const PAL_HAZARD = '#e0d040';
+const PAL_HAZARD_EDGE = '#f8f0c0';
 
 const HUD_TEXT_PX = 6;
 const HUD_MARGIN = 3;
@@ -101,6 +104,24 @@ export function renderRoomView(gfx, state, alpha) {
 
   for (const door of room.def.doors) {
     gfxFillRect(gfx, door.tx * t, door.ty * t, t, t, PAL_DOOR);
+  }
+
+  // SLIDING_BARRIERs (section 4.5). These were invisible until the M4 audit
+  // caught it: THE SLABS is built entirely around them and has no monsters, so
+  // an undrawn hazard made it a room where PIP dies to nothing he can see.
+  //
+  // Section 11: the sweep is a steady triangle wave with no strobe, and the
+  // barrier carries hatched cross-bars so it is not conveyed by hue alone.
+  for (const hazard of room.def.hazards) {
+    const b = hazardBox(hazard, room.ticks);
+    gfxFillRect(gfx, Math.round(b.x), Math.round(b.y), b.w, b.h, PAL_HAZARD);
+    // Bright caps at both ends give it a silhouette distinct from the treasure,
+    // which shares its hue family.
+    gfxFillRect(gfx, Math.round(b.x), Math.round(b.y), b.w, 2, PAL_HAZARD_EDGE);
+    gfxFillRect(gfx, Math.round(b.x), Math.round(b.y + b.h - 2), b.w, 2, PAL_HAZARD_EDGE);
+    for (let i = 3; i < b.h - 3; i += 3) {
+      gfxFillRect(gfx, Math.round(b.x), Math.round(b.y + i), b.w, 1, PAL_HAZARD_EDGE);
+    }
   }
 
   // Treasure and its safe tile. Section 3.7 - standing here makes PIP

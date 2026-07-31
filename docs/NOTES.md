@@ -736,6 +736,51 @@ time-bonus formula at M8; M4 owns only the phase transition, so the floor
 advances and the clock resets exactly once, in `startFloor`. Awarding a guessed
 number would be worse than awarding none.
 
+### M4-F2 — the M4 gates found four, all real, all fixed
+
+**`test-engineer`: the stairs gate had no teeth.** Removing `isStairsUnlocked`
+from the FLOOR_VIEW dispatch left all eight suites green. The existing assertion
+read the data function directly and never drove PIP onto the stairs tile through
+`updateGame` before looting, so the real gate was never exercised early. Fixed
+in `floors.mjs` and mutation-verified.
+
+**`test-engineer`: SLIDING_BARRIER lethality had ZERO coverage.** Making
+`hazardTouchesPlayer` return false left all eight green. THE SLABS has no
+monsters — the barriers *are* the room — so an inert hazard turned a pure-timing
+room into walk-in-take-the-coin. Now covered and mutation-verified, along with
+sweep bounds, periodicity, purity, and the reset-on-death.
+
+**`fidelity-auditor`: the hazards were never DRAWN.** `renderRoomView` read
+tiles, doors, treasure, corpses, monsters, arrow, intruder and PIP — and never
+`room.def.hazards`. THE SLABS shipped as an empty-looking chamber where PIP dies
+to something invisible, which also defeats §11: there is nothing to animate a
+steady no-strobe sweep for. Now drawn with hatched cross-bars and bright end
+caps, so it is not conveyed by hue alone and has a silhouette distinct from the
+treasure it shares a hue family with.
+
+**`fidelity-auditor`: `room.ticks` was missing from the hash — the SECOND
+instance of this class.** THE SLABS has no monsters and no corpses, so its whole
+per-room hash contribution was three constant booleans regardless of where its
+barriers were. The first instance was M3's WARDEN corner-clip fields. Both times
+the pattern is the same: **a new field that steers behaviour, added to state but
+not to `hashGameState`.** Standing habit from here — when `hashGameState` grows
+a block, diff it against the nearest existing block of the same shape.
+
+**`fidelity-auditor`: my `MONSTER_BEHAVIOUR` claim was false.** Both the code
+comment and NOTES said "M6 adds entries rather than editing `updateMonster`",
+while `updateMonster` dispatched on a bare `if (behaviour === 'ricochet')` with
+CRAWLER inlined — so M6's four archetypes would each have needed an edit to the
+very function the note promised they would not touch. Now keyed to functions, so
+the claim is true. Same class as the fabricated citation: **a comment asserting
+a property the code does not have.**
+
+**`fidelity-auditor`: THE WARRENS' "(fast)" was decoration.** §5 asks for 5×
+BOUNCER **fast** against THE OSSUARY's plain four, and both rooms instantiated
+identical monsters off the same global constant — the schema had no way to say
+"fast". SPEC §7.2.1 `[v1.1]` adds an optional per-spawn `speedFrac`; THE WARRENS
+now uses 1.10 against the 0.80 archetype default. Content fidelity, caught only
+because the auditor compared the shipped rooms against §5's table line by line.
+
 ### M4-F1 — a test regressed because the game got bigger, not because it broke
 
 `floors.mjs`'s doorway matrix started failing 54 of 1368 the moment three more

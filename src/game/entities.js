@@ -371,9 +371,19 @@ export function updatePlayerRoom(player, input, tiles, speedMul, blockedTiles) {
 // editing updateMonster. Section 4.4 defines six archetypes; two exist.
 // Anything not listed falls back to CRAWLER movement and is flagged
 // `placeholder`, which tests assert on so it cannot ship silently.
+// Behaviour is keyed to a FUNCTION, not a string tested by an if. The M4 audit
+// caught the earlier version claiming "M6 adds entries rather than editing
+// updateMonster" while dispatching on `if (behaviour === 'ricochet')` with the
+// CRAWLER logic inlined - which would have required editing updateMonster for
+// every one of M6's four archetypes. Now it genuinely does not.
 export const MONSTER_BEHAVIOUR = {
   CRAWLER: 'wallFollow',
   BOUNCER: 'ricochet'
+};
+
+const BEHAVIOUR_FN = {
+  wallFollow: updateCrawler,
+  ricochet: updateBouncer
 };
 
 export function createMonster(def, rng) {
@@ -381,6 +391,7 @@ export function createMonster(def, rng) {
     type: def.type,
     behaviour: MONSTER_BEHAVIOUR[def.type] || 'wallFollow',
     placeholder: !MONSTER_BEHAVIOUR[def.type],
+    speedFrac: def.speedFrac || 0,
     dodge: def.dodge,
     hp: 1,
     x: tileCenterPx(def.tx) - TUNING.monster.hurtbox / 2,
@@ -424,8 +435,11 @@ export function updateMonster(monster, tiles, speedMul) {
   if (!monster.alive) return;
   monster.prevX = monster.x;
   monster.prevY = monster.y;
-  if (monster.behaviour === 'ricochet') return updateBouncer(monster, tiles, speedMul);
+  const fn = BEHAVIOUR_FN[monster.behaviour] || updateCrawler;
+  return fn(monster, tiles, speedMul);
+}
 
+function updateCrawler(monster, tiles, speedMul) {
   const size = TUNING.monster.hurtbox;
   const speed = TUNING.player.speedRoom * speedMul * ARCHETYPE.crawlerSpeedFrac;
 
@@ -523,7 +537,11 @@ export function monsterDodgeCheck(monster, arrow, rng, tiles) {
 // makes the path read as a ricochet rather than a bounce-straight-back.
 function updateBouncer(monster, tiles, speedMul) {
   const size = TUNING.monster.hurtbox;
-  const speed = TUNING.player.speedRoom * speedMul * ARCHETYPE.bouncerSpeedFrac;
+  // Section 5 asks for FAST bouncers in THE WARRENS. speedFrac is an optional
+  // per-spawn override in the section 7.2 room schema; without it the archetype
+  // default applies, so the two rooms are no longer identical.
+  const frac = monster.speedFrac || ARCHETYPE.bouncerSpeedFrac;
+  const speed = TUNING.player.speedRoom * speedMul * frac;
   const d = DIRS[monster.dir];
 
   const stepX = moveAxisSeparated(monster.x, monster.y, size, size, d.dx * speed, 0, tiles, null);

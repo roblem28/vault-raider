@@ -1,7 +1,7 @@
-# VAULT RAIDER — Game Spec v1.0
+# VAULT RAIDER — Game Spec v1.1
 **An arcade dungeon crawler in the tradition of Venture (Exidy 1981 /
 ColecoVision 1982)** — nominative reference, see §0.1
-Date: 2026-07-31 · Owner: Box of Rox LLC · Supersedes v0.9
+Date: 2026-07-31 · Owner: Box of Rox LLC · Supersedes v1.0
 
 Changes from v0.1 are marked **[v0.2]**. Changes from v0.2 are marked **[v0.3]**
 (build output naming, deployment §16). Changes from v0.3 are marked **[v0.4]**
@@ -31,6 +31,9 @@ Changes from v0.8 are marked **[v0.9]** — the §4.4 dodge roll corrected from
 per-tick to ONCE PER ARROW PER MONSTER. `dodgeSkill` values were authored as
 per-shot probabilities and implemented as per-tick rolls, which compounded them
 to near-certainty; at HIGH that made a monster unhittable rather than hard.
+Changes from v1.0 are marked **[v1.1]** — the §7.2 per-spawn `speedFrac`
+override, added because §5's "fast" `BOUNCER` variant in `THE WARRENS` was
+otherwise inexpressible and shipped identical to `THE OSSUARY`'s.
 Changes from v0.9 are marked **[v1.0]** — the FEEL GATE PASSED, and three
 questions it left open are now ruled: a blocked dodge sidestep retries the
 opposite direction (§4.4), the intrusion siren sounds in floor view as well as
@@ -682,9 +685,24 @@ mask. The `barriers` array is retained for renderer hinting and for M3's
     { "type": "BRUTE", "tx": 14, "ty": 6, "dodge": "HIGH" },
     { "type": "BRUTE", "tx": 26, "ty": 6, "dodge": "HIGH" }
   ],
+  "_note": "[v1.1] a spawn may carry an optional speedFrac overriding the archetype default - see below",
   "hazards": []
 }
 ```
+
+#### **[v1.1]** 7.2.1 Optional per-spawn `speedFrac`
+
+A spawn entry may carry `speedFrac`, overriding that archetype's default speed
+for that one monster. Omitted means the archetype default.
+
+This exists because §5 asks for **5× `BOUNCER` (fast)** in `THE WARRENS` against
+`THE OSSUARY`'s plain four, and the schema had no way to express it — so the two
+rooms shipped byte-identical monsters and the "(fast)" qualifier was decoration.
+Caught by the M4 audit.
+
+Use it sparingly. A per-spawn override is content, not tuning: it does not live
+in §6, and a value used by more than one or two spawns belongs in the
+`ARCHETYPE` block instead.
 
 ### 7.3 **[v0.2]** Sprite encoding (keeps the single-file constraint)
 

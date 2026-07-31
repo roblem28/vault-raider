@@ -14,16 +14,23 @@
 
 import { TUNING, TILE_CHARS, GAME_PHASES } from '../src/data/tuning.js';
 import { ROOM_DEFS } from '../src/data/rooms.js';
-import { createGameState, updateGame, hashGameState } from '../src/game/state.js';
 import {
-  createRoomRuntime, playerOnSafeTile, intrusionWarningLevel
+  createGameState, updateGame, hashGameState, applyPlayerDeath
+} from '../src/game/state.js';
+import {
+  createRoomRuntime, playerOnSafeTile, intrusionWarningLevel, resetUnlootedRoom
 } from '../src/game/room.js';
+import { isStairsUnlocked as isStairsUnlockedRooms } from '../src/game/floor.js';
 import {
-  createCorpse, createMonster, shootCorpse, createWarden, updateWarden, monsterDodgeCheck
+  createCorpse, createMonster, shootCorpse, createWarden, updateWarden, monsterDodgeCheck,
+  updateMonster, MONSTER_BEHAVIOUR, hazardBox, hazardOffsetTiles
 } from '../src/game/entities.js';
 import { advanceAccumulator } from '../src/core/loop.js';
 import { createRng } from '../src/core/rng.js';
 import { boxHitsTiles } from '../src/game/collision.js';
+
+// Section 4.4: a BOUNCER travels on diagonals only.
+const DIRS_DIAGONAL = new Set([1, 3, 5, 7]);
 
 let failures = 0;
 
@@ -746,6 +753,197 @@ console.log('\n# dodge rate MATCHES ITS LABEL at every tier (section 4.4 [v0.9])
       Math.abs(aggRate - expected) <= TOLERANCE,
       `label ${expected}, got ${aggRate.toFixed(3)} - this is the per-tick compounding defect`);
   }
+}
+
+console.log('\n# SLIDING_BARRIER hazards (section 4.5) — THE SLABS has no other threat');
+{
+  // THE SLABS has spawnOnEntry: [] and spawnOnPickup: [] - the four barriers
+  // ARE the room. test-engineer proved that breaking hazardTouchesPlayer left
+  // all eight suites green, which made a pure-timing room walk-in-take-the-coin.
+  const def = ROOM_DEFS.slabs;
+  const T = TUNING.tile;
+  check('THE SLABS has no monsters at all', def.spawnOnEntry.length, 0);
+  assert('THE SLABS has hazards', def.hazards.length === 4);
+
+  // 1. Contact kills.
+  {
+    const state = emptyRoomState('slabs', 0x5148);
+    const p = state.floor.player;
+    p.invulnTicks = 0;
+    const h = def.hazards[0];
+    const box = hazardBox(h, state.room.ticks + 1);
+    p.x = box.x + 1;
+    p.y = box.y + 1;
+    const lives = p.lives;
+    updateGame(state, { dir: -1, facingLatch: -1, fire: false });
+    check('standing in a barrier kills PIP', p.lives, lives - 1);
+  }
+
+  // 2. Standing clear does NOT kill - or the room would be unwinnable.
+  {
+    const state = emptyRoomState('slabs', 0x5149);
+    const p = state.floor.player;
+    p.invulnTicks = 0;
+    p.x = def.treasure.tx * T + 1;
+    p.y = def.treasure.ty * T + 1;
+    const lives = p.lives;
+    for (let i = 0; i < 400; i++) updateGame(state, { dir: -1, facingLatch: -1, fire: false });
+    check('the treasure tile is never swept by a barrier', p.lives, lives);
+  }
+
+  // 3. The sweep actually sweeps, stays inside its travel, and is a pure
+  //    function of the tick - so it cannot desync a replay.
+  for (const h of def.hazards) {
+    let lo = Infinity;
+    let hi = -Infinity;
+    for (let t = 0; t < h.periodTicks * 2; t++) {
+      const off = hazardOffsetTiles(h, t);
+      lo = Math.min(lo, off);
+      hi = Math.max(hi, off);
+    }
+    assert(`barrier at ${h.tx},${h.ty} actually moves`, hi - lo > 1, `span ${(hi - lo).toFixed(2)}`);
+    assert(`barrier at ${h.tx},${h.ty} stays within its travel`,
+      lo >= -1e-9 && hi <= h.travel + 1e-9, `range ${lo.toFixed(2)}..${hi.toFixed(2)}`);
+    assert(`barrier at ${h.tx},${h.ty} is periodic`,
+      Math.abs(hazardOffsetTiles(h, 7) - hazardOffsetTiles(h, 7 + h.periodTicks)) < 1e-9);
+    assert(`barrier at ${h.tx},${h.ty} is a pure function of the tick`,
+      hazardOffsetTiles(h, 123) === hazardOffsetTiles(h, 123));
+  }
+
+  // 4. A death restarts the sweep, so a respawn never faces a frozen phase.
+  {
+    const state = emptyRoomState('slabs', 0x514A);
+    for (let i = 0; i < 77; i++) updateGame(state, { dir: -1, facingLatch: -1, fire: false });
+    assert('room ticks advance', state.room.ticks > 0);
+    resetUnlootedRoom(state.room);
+    check('resetting the room restarts the sweep', state.room.ticks, 0);
+  }
+}
+
+console.log('\n# BOUNCER ricochet (section 4.4)');
+{
+  const T = TUNING.tile;
+  check('BOUNCER has its own behaviour, not a placeholder',
+    MONSTER_BEHAVIOUR.BOUNCER, 'ricochet');
+
+  const state = emptyRoomState('ossuary', 0xB0);
+  const m = createMonster({ type: 'BOUNCER', tx: 20, ty: 14, dodge: 'LOW' }, state.rng);
+  check('a BOUNCER is not flagged placeholder', m.placeholder, false);
+
+  const tiles = ROOM_DEFS.ossuary.tiles;
+  const seen = new Set();
+  const dirs = new Set();
+  let outOfBounds = 0;
+  let stuck = 0;
+  for (let i = 0; i < 3000; i++) {
+    const bx = m.x;
+    const by = m.y;
+    updateMonster(m, tiles, 1);
+    if (m.x === bx && m.y === by) stuck++;
+    if (boxHitsTiles(tiles, m.x, m.y, TUNING.monster.hurtbox, TUNING.monster.hurtbox, null)) {
+      outOfBounds++;
+    }
+    seen.add(`${Math.floor(m.x / T)},${Math.floor(m.y / T)}`);
+    dirs.add(m.dir);
+  }
+  assert('a BOUNCER never enters a wall', outOfBounds === 0, `${outOfBounds} ticks inside geometry`);
+  assert('a BOUNCER covers ground rather than vibrating',
+    seen.size >= 20, `visited ${seen.size} tiles`);
+  assert('a BOUNCER actually changes direction', dirs.size >= 2, `dirs ${[...dirs].join(',')}`);
+  assert('a BOUNCER travels only on diagonals (section 4.4)',
+    [...dirs].every((d) => DIRS_DIAGONAL.has(d)), `dirs ${[...dirs].join(',')}`);
+  assert('a BOUNCER never wedges for long', stuck < 3000 * 0.05, `${stuck} motionless ticks`);
+}
+
+console.log('\n# an unlisted archetype is flagged, never silently a CRAWLER');
+{
+  const state = emptyRoomState('coil', 0xFA11);
+  const ghost = createMonster({ type: 'BRUTE', tx: 20, ty: 3, dodge: 'HIGH' }, state.rng);
+  assert('an archetype with no behaviour entry is flagged placeholder', ghost.placeholder === true);
+  check('and falls back to wall-following', ghost.behaviour, 'wallFollow');
+  // The four shipped archetypes must NOT be placeholders once M6 lands. Today
+  // only two exist, so this asserts the two that do.
+  for (const type of ['CRAWLER', 'BOUNCER']) {
+    const real = createMonster({ type, tx: 20, ty: 3, dodge: 'LOW' }, state.rng);
+    assert(`${type} is implemented, not a placeholder`, real.placeholder === false);
+  }
+}
+
+console.log('\n# sealing survives a death, per room (section 4.1)');
+{
+  // The integration test-engineer flagged as missing: loot SOME rooms for real,
+  // then die, and confirm the looted ones stay sealed while the unlooted ones
+  // reset. That is the partial-progress death, which is the softlock shape.
+  const state = createGameState(0x5EA1ED, 0);
+  state.floor.wardens.length = 0;
+  const p = state.floor.player;
+  const T2 = TUNING.tile;
+  p.invulnTicks = 1e9;
+
+  state.floor.rooms.coil = createRoomRuntime('coil', ROOM_DEFS.coil.doors[0], state.rng);
+  state.floor.rooms.ossuary = createRoomRuntime('ossuary', ROOM_DEFS.ossuary.doors[0], state.rng);
+  state.floor.looted.coil = true;
+  state.floor.rooms.coil.treasureTaken = true;
+  state.floor.rooms.ossuary.corpses.push(createCorpse(20 * T2, 14 * T2));
+
+  applyPlayerDeath(state);
+
+  check('the looted room stays sealed', state.floor.looted.coil, true);
+  check('and is not rebuilt', state.floor.rooms.coil.treasureTaken, true);
+  check('the unlooted room is reset', state.floor.rooms.ossuary.corpses.length, 0);
+  check('and stays unlooted', state.floor.looted.ossuary, undefined);
+  check('so the stairs are still locked', isStairsUnlockedRooms(state.floor), false);
+}
+
+console.log('\n# the four M4 audit fixes stay fixed');
+{
+  // 1. Hazards must be VISIBLE. render.js is DOM-bound and not test-importable,
+  //    so this asserts the data path the renderer reads.
+  const b0 = hazardBox(ROOM_DEFS.slabs.hazards[0], 0);
+  const b1 = hazardBox(ROOM_DEFS.slabs.hazards[0], 60);
+  assert('a barrier has a drawable box with real extent', b0.w > 0 && b0.h > 0);
+  assert('and that box actually moves between ticks', b0.x !== b1.x || b0.y !== b1.y);
+
+  // 2. room.ticks must be in the hash. THE SLABS has no monsters and no
+  //    corpses, so without it the room contributes only constants and two
+  //    replays could diverge on barrier position while hashing identical.
+  const a = emptyRoomState('slabs', 0x5AB5);
+  const c = emptyRoomState('slabs', 0x5AB5);
+  for (let i = 0; i < 40; i++) updateGame(a, { dir: -1, facingLatch: -1, fire: false });
+  for (let i = 0; i < 40; i++) updateGame(c, { dir: -1, facingLatch: -1, fire: false });
+  const hashBefore = hashGameState(a);
+  check('two identical runs agree', hashGameState(c), hashBefore);
+  a.floor.rooms.slabs.ticks += 17;
+  assert('advancing ONLY room.ticks changes the hash', hashGameState(a) !== hashBefore);
+
+  // 3. The behaviour table must be genuinely additive, keyed so that M6 adds
+  //    entries rather than editing updateMonster.
+  assert('CRAWLER and BOUNCER have distinct behaviours',
+    MONSTER_BEHAVIOUR.CRAWLER !== MONSTER_BEHAVIOUR.BOUNCER);
+
+  // 4. Section 5's "fast" WARRENS bouncers must actually be faster than
+  //    THE OSSUARY's. They shipped byte-identical until the M4 audit.
+  const warrensFrac = ROOM_DEFS.warrens.spawnOnEntry[0].speedFrac;
+  assert('THE WARRENS bouncers carry a speed override', warrensFrac > 0.80,
+    `got ${warrensFrac}`);
+  assert('THE OSSUARY bouncers do not', !ROOM_DEFS.ossuary.spawnOnEntry[0].speedFrac);
+
+  // And the override reaches the mover, not just the data.
+  const st = emptyRoomState('warrens', 0xFA57);
+  const fast = createMonster(ROOM_DEFS.warrens.spawnOnEntry[0], st.rng);
+  const slow = createMonster(ROOM_DEFS.ossuary.spawnOnEntry[0], st.rng);
+  let fastDist = 0;
+  let slowDist = 0;
+  for (let i = 0; i < 60; i++) {
+    const fx = fast.x; const fy = fast.y;
+    const sx = slow.x; const sy = slow.y;
+    updateMonster(fast, ROOM_DEFS.warrens.tiles, 1);
+    updateMonster(slow, ROOM_DEFS.ossuary.tiles, 1);
+    fastDist += Math.hypot(fast.x - fx, fast.y - fy);
+    slowDist += Math.hypot(slow.x - sx, slow.y - sy);
+  }
+  assert('a fast BOUNCER covers more ground than a default one',
+    fastDist > slowDist, `${fastDist.toFixed(1)} vs ${slowDist.toFixed(1)}`);
 }
 
 console.log('\n# EFFECTIVE dodge across room geometry (section 4.4 [v1.0])');

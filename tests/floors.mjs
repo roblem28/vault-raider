@@ -13,7 +13,7 @@
 import { TUNING, TILE_CHARS, GAME_PHASES } from '../src/data/tuning.js';
 import { FLOOR_LAYOUTS, floorDescriptorFor } from '../src/data/floors.js';
 import { createGameState, updateGame } from '../src/game/state.js';
-import { isStairsUnlocked } from '../src/game/floor.js';
+import { isStairsUnlocked, playerOnStairs } from '../src/game/floor.js';
 import { ROOM_DEFS } from '../src/data/rooms.js';
 import { advanceAccumulator } from '../src/core/loop.js';
 
@@ -375,6 +375,26 @@ console.log('\n# M4: seal all four rooms, unlock the stairs, descend (section 2)
   const NEUTRAL = { dir: -1, facingLatch: -1, fire: false };
 
   check('stairs start locked', isStairsUnlocked(state.floor), false);
+
+  // The gate must actually hold in updateGame's dispatch, not merely in the
+  // isStairsUnlocked() helper read in isolation - walk PIP onto the stairs
+  // tile itself, before any room is looted, and confirm the phase does NOT
+  // advance to FLOOR_CLEAR_BONUS. Every check below this point only visits
+  // the stairs AFTER all four rooms are looted, so without this the gate in
+  // state.js's FLOOR_VIEW dispatch (`playerOnStairs && isStairsUnlocked`)
+  // could be deleted entirely and nothing in this suite would notice.
+  {
+    const st0 = FLOOR_LAYOUTS[0].stairs;
+    p.x = st0.tx * T + 1;
+    p.y = st0.ty * T + 1;
+    p.prevX = p.x;
+    p.prevY = p.y;
+    assert('early stairs check: PIP is actually standing on the stairs tile',
+      playerOnStairs(state.floor));
+    updateGame(state, NEUTRAL);
+    check('stepping on LOCKED stairs does not start the floor clear',
+      state.phase, GAME_PHASES.FLOOR_VIEW);
+  }
 
   for (const room of FLOOR_LAYOUTS[0].rooms) {
     // Teleport to the door, which the passability matrix already proves is

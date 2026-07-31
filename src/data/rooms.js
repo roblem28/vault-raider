@@ -237,12 +237,15 @@ export const ROOM_DEFS = {
       { tx: 20, ty: 29, side: 'S' }
     ],
     treasure: { tx: 20, ty: 14, type: 'chest', safeTile: true },
+    // Section 5 specifies 5x BOUNCER (FAST) here, against THE OSSUARY's plain
+    // four. speedFrac is the section 7.2 per-spawn override - without it these
+    // were byte-identical to THE OSSUARY's and the "fast" qualifier was a lie.
     spawnOnEntry: [
-      { type: 'BOUNCER', tx: 6, ty: 6, dodge: 'LOW' },
-      { type: 'BOUNCER', tx: 33, ty: 6, dodge: 'LOW' },
-      { type: 'BOUNCER', tx: 6, ty: 23, dodge: 'LOW' },
-      { type: 'BOUNCER', tx: 33, ty: 23, dodge: 'LOW' },
-      { type: 'BOUNCER', tx: 20, ty: 20, dodge: 'LOW' }
+      { type: 'BOUNCER', tx: 6, ty: 6, dodge: 'LOW', speedFrac: 1.10 },
+      { type: 'BOUNCER', tx: 33, ty: 6, dodge: 'LOW', speedFrac: 1.10 },
+      { type: 'BOUNCER', tx: 6, ty: 23, dodge: 'LOW', speedFrac: 1.10 },
+      { type: 'BOUNCER', tx: 33, ty: 23, dodge: 'LOW', speedFrac: 1.10 },
+      { type: 'BOUNCER', tx: 20, ty: 20, dodge: 'LOW', speedFrac: 1.10 }
     ],
     spawnOnPickup: [],
     hazards: []
