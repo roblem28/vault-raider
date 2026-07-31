@@ -117,7 +117,21 @@ export function applyDoorwaySnap(x, y, w, h, dx, dy, mask, blockedTiles) {
   let nx = x;
   let ny = y;
 
-  // Moving horizontally: align on Y. Moving vertically: align on X.
+  // CARDINAL ONLY, and this is deliberate - MEASURED, not assumed.
+  //
+  // game-feel-critic flagged the `dy === 0` / `dx === 0` guards as a blind spot
+  // that denied diagonal approaches any assist. That was a reasonable
+  // hypothesis and it is wrong: extending the assist to diagonals COLLAPSED the
+  // entry window from 924/1436 to 444/1436. On a diagonal both nudges fire, each
+  // validated against the pre-nudge position, so the combined result is never
+  // checked and the two corrections fight each other into walls.
+  //
+  // The deeper reason it is not needed: a diagonal already corrects on both
+  // axes as it travels, so it self-aligns. Measured un-assisted diagonal entry
+  // is 64.3% against 30.9% assisted. Diagonals do not want help.
+  //
+  // tests/rooms.mjs sweeps diagonal approaches specifically to keep this
+  // measured rather than argued.
   if (dx !== 0 && dy === 0) {
     const centerY = y + h / 2;
     const target = (Math.floor(centerY / TUNING.tile) + 0.5) * TUNING.tile;

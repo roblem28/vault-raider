@@ -319,6 +319,207 @@ AT RISK item from M1. `main.js` is now wiring only.
 
 ---
 
+## M3 — vertical slice (2026-07-30/31)
+
+### M3-A1 — INVENTED CONSTANT, needs approval: `ARCHETYPE.crawlerSpeedFrac: 0.55`
+
+SPEC §4.4 describes each archetype qualitatively — CRAWLER is "perimeter /
+wall-following, predictable" — and gives **none of them a speed**. That number
+has to come from somewhere.
+
+0.55 × PIP's room speed, so the floor-1 teaching monster can be walked away
+from, which is what makes "predictable" true in play rather than just on paper.
+
+Lives in a **fourth** segregated block, `ARCHETYPE`, alongside `SCHEDULER`,
+`GEOM`, and `UNSTICK`. Same risk class as `UNSTICK`: reachable from `update()`,
+determinism-critical, and balance-affecting. It gets its own block rather than
+joining `UNSTICK` because §6.1 forbids applying one block's rationale to another
+by analogy, and M6 adds five more archetypes that will each need speed and
+behaviour numbers — a named home now, or five copy-pasted module-locals later.
+
+**Feel-gate knob.**
+
+### M3-A2 — INVENTED CONSTANTS: the `AUDIO` block
+
+`sirenBaseHz: 220`, `sirenPeakHz: 880`, `sirenGain: 0.12`, `sirenRampSec: 0.05`.
+§10 specifies the siren qualitatively — "rising siren… must be unmistakable" —
+and gives no frequencies.
+
+Determinism-**neutral**, and for the same structural reason `SCHEDULER` is:
+nothing reachable from `update()` reads them. Audio is driven from `main.js`'s
+render side and can never feed back into game state. That is what puts it in a
+different risk class from `GEOM` and `UNSTICK`, and it is worth keeping true —
+if a game rule ever reads an audio value, that reasoning is void.
+
+### M3-F1 — FOUNDATION WRONG, fixed: the intruder patrolled instead of hunting
+
+`fidelity-auditor` found it. §4.3: "On intrusion: spawns at a room door,
+**switches to pure chase**, ignores geometry cost."
+
+The intruder was built with an ordinary `createWarden` on a one-waypoint route
+and driven through the same `updateWarden` as a patrol WARDEN — which rolls
+`chase = rng() < pursuitBias`. Bias caps at `pursuitBiasCap` 0.9 and **can never
+reach 1.0**, so the intruder headed back to its own spawn door on roughly 10% of
+ticks, forever. It spawned correctly, never left, and killed on contact, so
+every existing assertion passed. It simply did not hunt.
+
+Fixed with an explicit `pureChase` argument. The RNG roll is still consumed in
+both modes so that consumption order — and therefore replay determinism — does
+not depend on which mode is active.
+
+**The first regression test I wrote for this had no teeth**, and the reason is
+worth keeping: by the time intrusion fires, elapsed ≥ `floorTimerSec`, so bias
+is already at 0.9 and patrol mode chases 90% of ticks. It still arrives, just
+wastefully — "does it close on PIP" passes either way. The discriminator is
+**bias zero**, where the two modes are exact opposites: patrol walks to the
+waypoint every tick, pure chase walks to PIP every tick. Verified failing
+pre-fix at −30 px.
+
+### M3-F2 — FOUNDATION WRONG, fixed: the intruder was under-hashed
+
+`hashGameState` gave patrol WARDENs all 11 state fields and the room intruder
+**2** — position only — while both are the same entity shape driven by the same
+`updateWarden`, corner-clipping included. §12.1.1's inclusion test is explicit,
+and nine steering fields were being dropped.
+
+Fixed by routing both through one `pushWardenState` helper. The underlying cause
+was two hand-maintained copies of one entity's hash, so the fix is structural
+rather than just adding the missing fields: a field added to one is now
+necessarily added to both.
+
+### M3-F3 — a fabricated citation, and the discipline failure behind it
+
+`entities.js` carried `// INVENTED - see docs/NOTES.md M3-A1` **when no M3
+section of NOTES.md existed**. The auditor caught it by grepping for the anchor.
+Four siren constants had no disclosure attempted at all.
+
+Both are now real entries (M3-A1, M3-A2 above) with real constants in
+`tuning.js`. Recording the failure mode because it is subtle: a comment
+promising disclosure reads exactly like disclosure to a later reader, and is
+worse than no comment, because it stops them looking.
+
+### M3-F4 — a11y: the corpse hatch thinned to one pixel at the final decay phase
+
+`fidelity-auditor` traced the hatch arithmetic by hand. A fixed 2 px diagonal
+stride over a box shrinking with each decay phase left exactly **one** hatch
+pixel at phase 3 — the last phase before a corpse vanishes, while it is still
+lethal and still blocking.
+
+§11 requires corpse lethality never be conveyed by hue alone, at every phase.
+One pixel is not a hatch.
+
+**My first fix was wrong, and the same auditor caught that too.** Scaling the
+stride to the current span still left only **two** marks at phase 3, because
+letting the box shrink a pixel per phase makes it 2×2 by then — and a 2×2 box
+cannot hold three diagonal marks. **The geometry was the limit, not the
+stride**, and I had changed the wrong variable.
+
+Actually fixed by capping the shrink at `decayPhases - 2`, so a corpse never
+falls below half a tile while it is still lethal, and adding the second diagonal
+at the final phase — which also solves the problem that capping the shrink makes
+the last two phases the same size. An X is a distinct broken silhouette.
+
+Measured, per phase: span 8, 6, 4, 4 → **4, 3, 4, 8** hatch marks.
+
+**The counts are now asserted in `tests/rooms.mjs`, not claimed in a comment.**
+That is the actual lesson: I made this claim twice in a code comment and was
+wrong twice. A number a reviewer has to re-derive by hand to check is a number
+that should be in a test.
+
+Caught at M3 rather than at M9's accessibility pass, which is where it would
+otherwise have shipped from.
+
+### M3-F5 — FEEL BUG, fixed: the arrow was the only un-interpolated actor
+
+`game-feel-critic` found it. PIP, monsters, and WARDENs all lerp `prevX/prevY`
+by `alpha`; the arrow rendered at its raw tick position because
+`createArrowState` never allocated `prevX/prevY`.
+
+It matters more than a generic stutter would, because the arrow is **the one
+object precision aiming is judged against**. A non-interpolated projectile makes
+a clean miss look like a rendering glitch rather than a player error — which is
+feel-gate question 2 ("does a missed shot feel like *your* mistake") failing for
+a reason that has nothing to do with the aiming.
+
+### M3-F6 — the diagonal snap-assist "fix" was WRONG, and the measurement said so
+
+`game-feel-critic`'s second finding: `applyDoorwaySnap`'s guards
+(`dx !== 0 && dy === 0`) mean a **diagonal** approach to a 1-tile gap gets no
+assist at all, and the trial only swept cardinals so the blind spot was
+invisible. Plausible, specific, and it named the right code.
+
+**I implemented it, extended the trial to all eight directions, and the numbers
+said the reviewer was wrong.**
+
+| Snap-assist | Entry window (1436 legal starts) |
+|---|---|
+| Cardinal-only (shipped) | **988 / 1436 — 68.8%** |
+| Extended to diagonals | **444 / 1436 — 30.9%** |
+| Disabled entirely | 924 / 1436 — 64.3% |
+
+Extending it more than halved the entry window. Two reasons:
+
+1. On a diagonal both nudges fire, and each is validated against the
+   **pre-nudge** position — so the combined result is never checked, and the two
+   corrections push each other into walls.
+2. More fundamentally, **a diagonal already self-corrects on both axes as it
+   travels**, so it does not need help. Un-assisted diagonal entry is 64.3%;
+   assisted cardinal-only is 68.8%.
+
+Reverted to cardinal-only, with the reasoning recorded at the guard so the next
+reader does not "fix" it again. **The diagonal sweep stays in the trial** — it
+now costs nothing and keeps this measured rather than re-argued.
+
+Net effect of adding diagonals to the trial: the honest denominator went from
+828 to 1436 starts, and snap-assist still rescues **64**. It earns its place.
+
+### M3-D4 — TUNING CONCERN, deferred to the gate: CRAWLER dodge compounds
+
+`game-feel-critic`'s third finding, and the arithmetic is right. §4.4 specifies
+the dodge roll happens **on each tick** an arrow is in range and aligned. With
+`dodgeSkill.LOW = 0.15` and `dodgeLookahead = 24 px` against a 3.5 px/tick
+arrow, that is ~7 rolls per approach: `1 - 0.85^7 ≈ 68%` aggregate dodge, not
+15%. My own M3 measurement — the CRAWLER stepping out of the lane at tick 21 and
+a fixed-row test never connecting again — is this working exactly as coded.
+
+**Not changed, deliberately.** The code matches §4.4 literally; both
+`dodgeSkill.LOW` and `dodgeLookahead` are transcribed SPEC values, so retuning
+either is a spec deviation needing approval, and "gate the roll to once per
+arrow" is a mechanic change. The tension is real though: floor 1's *teaching*
+monster, labelled LOW and "predictable", behaves like a much higher tier in
+aggregate, and an unhittable first monster fails feel-gate question 2.
+
+Three options for the gate, cheapest first: drop `dodgeSkill.LOW` toward
+0.05–0.08; drop `dodgeLookahead` for the LOW tier only; or roll once per
+arrow-entering-range instead of per tick. Raise at the checkpoint.
+
+### M3-D1 — AT RISK, accepted: two arrow slots, one gate
+
+`floor.arrow` and `room.arrow` are separate objects sharing one `requestFire`
+gate. §3.8 says "exactly one arrow alive, ever" without saying whether that is
+global or per-view. Not exploitable today — only one view updates at a time, so
+a hall arrow freezes on room entry and resumes on exit rather than double-
+updating. Flagged rather than changed, because collapsing them to one slot is a
+behaviour change SPEC does not clearly ask for. Raise at the feel gate.
+
+### M3-D2 — SPEC ambiguity: the siren sounds in floor view too
+
+`main.js` drives the siren from the floor clock regardless of phase, so the
+warning sounds wherever PIP is. §10 frames the siren around room intrusion and
+does not say whether it should be silent in the hall. Arguably better as-is —
+advance warning is useful everywhere — but it is a guess. Raise at the gate.
+
+### M3-D3 — dead tuning data
+
+`TUNING.corpse.lethalToPlayer`, `blocksPlayer`, `blocksMonsters`, `blocksWarden`
+are declared and never read; the behaviours they describe are enforced
+structurally instead (corpses simply are not passed to monster or WARDEN
+movement). Same class as `arrow.maxAlive`. Not a bug, but a future editor could
+flip one expecting an effect and get none. Left alone at M3; worth either wiring
+or deleting before M6 adds more archetypes.
+
+---
+
 ## Withdrawn reviewer findings
 
 Tracked per CLAUDE.md: if the withdrawal rate stays high, the agent file needs

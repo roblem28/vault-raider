@@ -18,7 +18,9 @@ import { createGameState, updateGame, hashGameState } from '../src/game/state.js
 import {
   createRoomRuntime, playerOnSafeTile, intrusionWarningLevel
 } from '../src/game/room.js';
-import { createCorpse, createMonster, shootCorpse } from '../src/game/entities.js';
+import {
+  createCorpse, createMonster, shootCorpse, createWarden, updateWarden
+} from '../src/game/entities.js';
 import { advanceAccumulator } from '../src/core/loop.js';
 import { boxHitsTiles } from '../src/game/collision.js';
 
@@ -96,7 +98,15 @@ function passabilityMatrix(roomId) {
   // keeping every start position whose box is legally clear of walls.
   const SWEEP_STEP = 0.5;
   const RATES = [60, 30];
-  const DIRS_BY_NAME = { N: [0, -1, 0], S: [0, 1, 4], E: [1, 0, 2], W: [-1, 0, 6] };
+  // DIAGONALS INCLUDED. An earlier version swept only the four cardinals, which
+  // is exactly why snap-assist's diagonal blind spot survived it: the assist
+  // required the other axis to be zero, so no diagonal approach was ever
+  // assisted, and no test ever tried one. Cutting a corner into a pinch is the
+  // natural way to move on a gamepad and common on a keyboard.
+  const DIRS_BY_NAME = {
+    N: [0, -1, 0], NE: [1, -1, 1], E: [1, 0, 2], SE: [1, 1, 3],
+    S: [0, 1, 4], SW: [-1, 1, 5], W: [-1, 0, 6], NW: [-1, -1, 7]
+  };
   const MAX_FRAMES = 160;
   const T = TUNING.tile;
   const BOX = TUNING.player.hitboxRoom;
@@ -478,6 +488,108 @@ console.log('\n# WARDEN INTRUSION - the other half of M3 (section 3.3)');
   const lives = p.lives;
   updateGame(state, { dir: -1, facingLatch: -1, fire: false });
   check('the intruding WARDEN kills PIP on contact', p.lives, lives - 1);
+}
+
+console.log('\n# corpse hatch legibility at EVERY decay phase (section 11)');
+{
+  // Section 11: corpse lethality must never be conveyed by hue alone - a
+  // diagonal hatch AND a distinct broken silhouette at every decay phase.
+  //
+  // This is asserted rather than claimed in a comment, because the claim was
+  // wrong twice. Mirrors render.js's hatch arithmetic exactly; if that changes
+  // and this is not updated, the counts diverge and this fails.
+  const t = TUNING.tile;
+  const phases = TUNING.corpse.decayPhases;
+  const counts = [];
+  const spans = [];
+  for (let phase = 0; phase < phases; phase++) {
+    const shrink = Math.min(phase, phases - 2);
+    const span = t - shrink * 2;
+    const stride = Math.max(1, Math.floor(span / 3));
+    let marks = 0;
+    for (let i = 0; i < span; i += stride) marks++;
+    if (phase >= phases - 1) marks *= 2;   // the X at the final phase
+    counts.push(marks);
+    spans.push(span);
+  }
+  console.log(`     span per phase  ${spans.join(', ')}`);
+  console.log(`     hatch marks     ${counts.join(', ')}`);
+  assert('at least 3 hatch marks at EVERY decay phase, including the last',
+    counts.every((n) => n >= 3), `got ${counts.join(', ')}`);
+  assert('the corpse never shrinks below half a tile while still lethal',
+    spans.every((s) => s >= t / 2), `got ${spans.join(', ')}`);
+  assert('the final phase is visually distinct from the one before it',
+    counts[phases - 1] !== counts[phases - 2] || spans[phases - 1] !== spans[phases - 2],
+    'last two phases render identically');
+}
+
+console.log('\n# the intruder HUNTS - pure chase, not patrol (section 4.3)');
+{
+  // Section 4.3: "On intrusion: spawns at a room door, switches to PURE chase."
+  //
+  // Reusing the patrol path unchanged left the intruder rolling against pursuit
+  // bias, which caps at pursuitBiasCap (0.9) and can never reach 1.0 - so it
+  // headed back to its own spawn door on ~10% of ticks forever. It spawned, it
+  // never left, and it killed on contact, so the earlier tests all passed. It
+  // simply did not hunt. This measures closing distance, which is what was
+  // missing. Verified failing against the pre-fix implementation.
+  const state = emptyRoomState('coil', 0x8074);
+  const room = state.floor.rooms.coil;
+  const p = state.floor.player;
+  const T = TUNING.tile;
+  state.floor.elapsedTicks = Math.round(state.floor.descriptor.floorTimerSec / TUNING.dt) + 1;
+  updateGame(state, { dir: -1, facingLatch: -1, fire: false });
+  assert('intruder spawned', room.intruder !== null);
+
+  // Park PIP somewhere reachable and stationary, and watch the gap close.
+  p.x = 20 * T + 1;
+  p.y = 21 * T + 1;
+  p.prevX = p.x;
+  p.prevY = p.y;
+  const dist = () => Math.hypot(room.intruder.x - p.x, room.intruder.y - p.y);
+  const start = dist();
+  let closest = start;
+  for (let i = 0; i < 900; i++) {
+    updateGame(state, { dir: -1, facingLatch: -1, fire: false });
+    if (!room.intruder) break;
+    closest = Math.min(closest, dist());
+  }
+  assert('the intruder closes on PIP', closest < start * 0.5,
+    `start ${start.toFixed(0)}px, closest ${closest.toFixed(0)}px`);
+
+  // THE DISCRIMINATOR. The check above passes either way and is not enough:
+  // by the time intrusion fires, elapsed >= floorTimerSec, so pursuit bias is
+  // already at its 0.9 cap and patrol mode chases 90% of ticks - it still
+  // arrives, just wastefully. The defect is invisible at high bias.
+  //
+  // At bias ZERO the two modes are opposites: patrol goes to the waypoint every
+  // single tick, pure chase goes to PIP every single tick. So drive
+  // updateWarden directly at elapsedSec = 0, with the waypoint and PIP in
+  // opposite directions, and see which way it actually walks.
+  const solo = emptyRoomState('coil', 0x8075);
+  const sp = solo.floor.player;
+  sp.x = 30 * T;
+  sp.y = 21 * T;
+  // Waypoint far to the WEST, PIP far to the EAST of the WARDEN.
+  const w = createWarden({ waypoints: [[6, 21]], startIdx: 0 }, 1, 1);
+  w.x = 20 * T;
+  w.y = 21 * T;
+  const beforeX = w.x;
+  for (let i = 0; i < 30; i++) {
+    updateWarden(w, sp, solo.room.tiles, 0, 1, solo.rng, true);
+  }
+  assert('at zero pursuit bias a PURE-CHASE warden still walks toward PIP',
+    w.x > beforeX, `moved ${(w.x - beforeX).toFixed(1)}px (east is toward PIP)`);
+
+  // And the control: the same call WITHOUT pure chase must go the other way.
+  const w2 = createWarden({ waypoints: [[6, 21]], startIdx: 0 }, 1, 1);
+  w2.x = 20 * T;
+  w2.y = 21 * T;
+  for (let i = 0; i < 30; i++) {
+    updateWarden(w2, sp, solo.room.tiles, 0, 1, solo.rng, false);
+  }
+  assert('a patrol warden at zero bias walks toward its waypoint instead',
+    w2.x < beforeX, `moved ${(w2.x - beforeX).toFixed(1)}px (west is toward the waypoint)`);
 }
 
 console.log('\n# intrusion warning ramp (sections 3.3, 10, 11)');

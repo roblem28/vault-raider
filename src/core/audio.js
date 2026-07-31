@@ -14,12 +14,7 @@
 //
 // No DOM or AudioContext access at import time. Safe to import from tests/.
 
-import { TUNING } from '../data/tuning.js';
-
-const SIREN_BASE_HZ = 220;
-const SIREN_PEAK_HZ = 880;
-const SIREN_GAIN = 0.12;
-const SIREN_RAMP_SEC = 0.05;
+import { TUNING, AUDIO } from '../data/tuning.js';
 
 export function createAudio() {
   return {
@@ -69,8 +64,8 @@ export function setSirenLevel(audio, level) {
 
   if (level <= 0) {
     if (audio.sirenOsc) {
-      audio.sirenGain.gain.setTargetAtTime(0, audio.ctx.currentTime, SIREN_RAMP_SEC);
-      audio.sirenOsc.stop(audio.ctx.currentTime + SIREN_RAMP_SEC * 4);
+      audio.sirenGain.gain.setTargetAtTime(0, audio.ctx.currentTime, AUDIO.sirenRampSec);
+      audio.sirenOsc.stop(audio.ctx.currentTime + AUDIO.sirenRampSec * 4);
       audio.sirenOsc = null;
       audio.sirenGain = null;
     }
@@ -86,9 +81,9 @@ export function setSirenLevel(audio, level) {
     audio.sirenGain.connect(audio.master);
     audio.sirenOsc.start();
   }
-  const hz = SIREN_BASE_HZ + (SIREN_PEAK_HZ - SIREN_BASE_HZ) * level;
-  audio.sirenOsc.frequency.setTargetAtTime(hz, audio.ctx.currentTime, SIREN_RAMP_SEC);
-  audio.sirenGain.gain.setTargetAtTime(SIREN_GAIN * level, audio.ctx.currentTime, SIREN_RAMP_SEC);
+  const hz = AUDIO.sirenBaseHz + (AUDIO.sirenPeakHz - AUDIO.sirenBaseHz) * level;
+  audio.sirenOsc.frequency.setTargetAtTime(hz, audio.ctx.currentTime, AUDIO.sirenRampSec);
+  audio.sirenGain.gain.setTargetAtTime(AUDIO.sirenGain * level, audio.ctx.currentTime, AUDIO.sirenRampSec);
 }
 
 export function stopAllAudio(audio) {

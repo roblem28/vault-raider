@@ -158,6 +158,38 @@ export const GEOM = {
 // 33 s, worst 48 s, against a 45 s floor timer.
 //
 // These are the knobs to turn at the feel gate. See docs/NOTES.md M2-B3.
+// --- ARCHETYPE -------------------------------------------------------------
+// Not transcribed | INSIDE simulation | determinism-CRITICAL | BALANCE-AFFECTING
+//
+// A FOURTH block, added at M3. Section 4.4 describes each monster archetype
+// qualitatively ("predictable", "lumbering", "erratic") and gives none of them a
+// speed. Those numbers have to come from somewhere, and M6 adds five more
+// archetypes that will each need their own - so they get a named home now
+// rather than five copy-pasted module-locals later.
+//
+// Same risk class as UNSTICK: reachable from update(), and it sets how hard the
+// game is. Feel-gate knobs. See docs/NOTES.md M3-A1.
+export const ARCHETYPE = {
+  // CRAWLER moves slower than PIP so the floor-1 teaching monster can be walked
+  // away from. Section 4.4 calls it "predictable"; this is what makes that true.
+  crawlerSpeedFrac: 0.55
+};
+
+// --- AUDIO -----------------------------------------------------------------
+// Not transcribed | OUTSIDE simulation | determinism-NEUTRAL
+//
+// Section 10 specifies cues qualitatively ("rising siren", "must be
+// unmistakable") and gives no frequencies. Determinism-neutral like SCHEDULER,
+// for the same structural reason: nothing reachable from update() reads these -
+// audio is driven from render/main and can never feed back into game state.
+// See docs/NOTES.md M3-A2.
+export const AUDIO = {
+  sirenBaseHz: 220,
+  sirenPeakHz: 880,
+  sirenGain: 0.12,
+  sirenRampSec: 0.05
+};
+
 export const UNSTICK = {
   afterTicks: 45,        // no-progress window before a WARDEN is judged wedged
   minSpanPx: 12,         // motion bounding-box under this = wedged (1.5 tiles)

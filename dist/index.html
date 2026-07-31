@@ -214,6 +214,38 @@ const GEOM = {
 // 33 s, worst 48 s, against a 45 s floor timer.
 //
 // These are the knobs to turn at the feel gate. See docs/NOTES.md M2-B3.
+// --- ARCHETYPE -------------------------------------------------------------
+// Not transcribed | INSIDE simulation | determinism-CRITICAL | BALANCE-AFFECTING
+//
+// A FOURTH block, added at M3. Section 4.4 describes each monster archetype
+// qualitatively ("predictable", "lumbering", "erratic") and gives none of them a
+// speed. Those numbers have to come from somewhere, and M6 adds five more
+// archetypes that will each need their own - so they get a named home now
+// rather than five copy-pasted module-locals later.
+//
+// Same risk class as UNSTICK: reachable from update(), and it sets how hard the
+// game is. Feel-gate knobs. See docs/NOTES.md M3-A1.
+const ARCHETYPE = {
+  // CRAWLER moves slower than PIP so the floor-1 teaching monster can be walked
+  // away from. Section 4.4 calls it "predictable"; this is what makes that true.
+  crawlerSpeedFrac: 0.55
+};
+
+// --- AUDIO -----------------------------------------------------------------
+// Not transcribed | OUTSIDE simulation | determinism-NEUTRAL
+//
+// Section 10 specifies cues qualitatively ("rising siren", "must be
+// unmistakable") and gives no frequencies. Determinism-neutral like SCHEDULER,
+// for the same structural reason: nothing reachable from update() reads these -
+// audio is driven from render/main and can never feed back into game state.
+// See docs/NOTES.md M3-A2.
+const AUDIO = {
+  sirenBaseHz: 220,
+  sirenPeakHz: 880,
+  sirenGain: 0.12,
+  sirenRampSec: 0.05
+};
+
 const UNSTICK = {
   afterTicks: 45,        // no-progress window before a WARDEN is judged wedged
   minSpanPx: 12,         // motion bounding-box under this = wedged (1.5 tiles)
@@ -1036,7 +1068,21 @@ function applyDoorwaySnap(x, y, w, h, dx, dy, mask, blockedTiles) {
   let nx = x;
   let ny = y;
 
-  // Moving horizontally: align on Y. Moving vertically: align on X.
+  // CARDINAL ONLY, and this is deliberate - MEASURED, not assumed.
+  //
+  // game-feel-critic flagged the `dy === 0` / `dx === 0` guards as a blind spot
+  // that denied diagonal approaches any assist. That was a reasonable
+  // hypothesis and it is wrong: extending the assist to diagonals COLLAPSED the
+  // entry window from 924/1436 to 444/1436. On a diagonal both nudges fire, each
+  // validated against the pre-nudge position, so the combined result is never
+  // checked and the two corrections fight each other into walls.
+  //
+  // The deeper reason it is not needed: a diagonal already corrects on both
+  // axes as it travels, so it self-aligns. Measured un-assisted diagonal entry
+  // is 64.3% against 30.9% assisted. Diagonals do not want help.
+  //
+  // tests/rooms.mjs sweeps diagonal approaches specifically to keep this
+  // measured rather than argued.
   if (dx !== 0 && dy === 0) {
     const centerY = y + h / 2;
     const target = (Math.floor(centerY / TUNING.tile) + 0.5) * TUNING.tile;
@@ -1137,7 +1183,11 @@ function updatePlayerFloor(player, input, mask, speedMul, blockedTiles) {
 // newbie trap, not a bug to fix.
 
 function createArrowState() {
-  return { alive: false, x: 0, y: 0, dir: 2, windup: 0, pending: false };
+  // prevX/prevY exist so the arrow INTERPOLATES like every other actor. It was
+  // the one thing rendering un-interpolated next to lerped monsters and PIP,
+  // which made a clean miss look like a rendering glitch - on the single object
+  // that precision aiming is judged against.
+  return { alive: false, x: 0, y: 0, prevX: 0, prevY: 0, dir: 2, windup: 0, pending: false };
 }
 
 // THE one fire gate. Floor view and (from M3) room view both call this rather
@@ -1165,11 +1215,17 @@ function updateArrow(arrow, player, mask) {
       const size = TUNING.player.hitboxFloor;
       arrow.x = player.x + size / 2;
       arrow.y = player.y + size / 2;
+      // Spawn with prev == current so the first rendered frame does not lerp
+      // in from wherever the last arrow died.
+      arrow.prevX = arrow.x;
+      arrow.prevY = arrow.y;
     }
     return;
   }
   if (!arrow.alive) return;
 
+  arrow.prevX = arrow.x;
+  arrow.prevY = arrow.y;
   const d = DIRS[arrow.dir];
   arrow.x += d.dx * TUNING.arrow.speed;
   arrow.y += d.dy * TUNING.arrow.speed;
@@ -1228,7 +1284,12 @@ function wardenPursuitBias(elapsedSec) {
   return Math.min(TUNING.warden.pursuitBiasCap, TUNING.warden.pursuitBiasRate * elapsedSec);
 }
 
-function updateWarden(warden, player, mask, elapsedSec, speedMul, rng) {
+// pureChase: section 4.3's intrusion mode. An intruding WARDEN "switches to
+// PURE chase" - it does not roll against pursuit bias at all. Reusing the
+// patrol path unchanged left the intruder targeting its own spawn door on ~10%
+// of ticks forever, because bias caps at pursuitBiasCap (0.9) and can never
+// reach 1.0. That is patrol behaviour with a one-point route, not hunting.
+function updateWarden(warden, player, mask, elapsedSec, speedMul, rng, pureChase) {
   warden.prevX = warden.x;
   warden.prevY = warden.y;
 
@@ -1240,7 +1301,10 @@ function updateWarden(warden, player, mask, elapsedSec, speedMul, rng) {
   const speed = warden.speedMul * speedMul;
 
   // Each tick, with probability bias, step toward PIP instead of the waypoint.
-  const chase = rng.nextFloat() < wardenPursuitBias(elapsedSec);
+  // The roll is consumed either way so that RNG consumption order - and
+  // therefore replay determinism - does not depend on which mode is active.
+  const roll = rng.nextFloat();
+  const chase = pureChase ? true : roll < wardenPursuitBias(elapsedSec);
 
   let targetX;
   let targetY;
@@ -1371,11 +1435,6 @@ function wardenTouchesPlayer(warden, player, inRoom) {
   return aabbOverlap(p.x, p.y, p.w, p.h, w.x, w.y, w.w, w.h);
 }
 
-// Section 4.4 gives CRAWLER no speed of its own, only "predictable". It moves
-// slower than PIP so the floor-1 teaching monster can be walked away from.
-// INVENTED - see docs/NOTES.md M3-A1.
-const CRAWLER_SPEED_FRAC = 0.55;
-
 // --- PIP in room view ------------------------------------------------------
 
 function updatePlayerRoom(player, input, tiles, speedMul, blockedTiles) {
@@ -1447,7 +1506,7 @@ function updateMonster(monster, tiles, speedMul) {
   monster.prevY = monster.y;
 
   const size = TUNING.monster.hurtbox;
-  const speed = TUNING.player.speedRoom * speedMul * CRAWLER_SPEED_FRAC;
+  const speed = TUNING.player.speedRoom * speedMul * ARCHETYPE.crawlerSpeedFrac;
 
   for (const candidate of crawlerTurnOrder(monster.dir, monster.hand)) {
     const d = DIRS[candidate];
@@ -1707,8 +1766,11 @@ function updateRoom(room, player, input, descriptor, elapsedSec) {
     spawnIntrusionWarden(room, descriptor);
   }
   if (room.intruder) {
-    // Pure chase, ignores geometry cost. Corpses do not block it.
-    updateWarden(room.intruder, player, room.tiles, elapsedSec, speedMul, room.rng);
+    // Section 4.3: PURE chase, ignores geometry cost. The trailing `true` is
+    // load-bearing - without it the intruder rolls against pursuit bias like a
+    // patrol WARDEN and heads back to its spawn door on ~10% of ticks forever.
+    // Corpses do not block it (blocksWarden is false).
+    updateWarden(room.intruder, player, room.tiles, elapsedSec, speedMul, room.rng, true);
   }
 
   // Treasure pickup. Section 3.12: trap rooms spawn on PICKUP, not on entry.
@@ -2142,11 +2204,13 @@ function hashGameState(state) {
 
   // Corner-clipping state changes where a WARDEN goes next, so omitting it
   // could hide a divergence (section 12.1.1 inclusion test).
-  for (const w of floor.wardens) {
-    nums.push(w.x, w.y, w.routeIdx,
-      w.checkTicks, w.minX, w.maxX, w.minY, w.maxY,
-      w.slideTicks, w.slideAxis, w.slideSign);
-  }
+  //
+  // Routed through ONE helper deliberately. The room intruder is the same
+  // entity shape driven by the same updateWarden, and hashing it inline meant
+  // it silently got 2 of these 11 fields while patrol WARDENs got all 11. Two
+  // hand-maintained copies of an entity's hash is how that happens; there is
+  // now only one.
+  for (const w of floor.wardens) pushWardenState(nums, w);
 
   // Room looted flags, in a stable order.
   for (const room of floor.layout.rooms) nums.push(floor.looted[room.id] ? 1 : 0);
@@ -2162,13 +2226,21 @@ function hashGameState(state) {
     for (const m of r.monsters) nums.push(m.x, m.y, m.dir, m.hp, m.alive ? 1 : 0);
     for (const c of r.corpses) nums.push(c.tx, c.ty, c.phase, c.phaseTicks);
     nums.push(r.arrow.alive ? 1 : 0, r.arrow.x, r.arrow.y, r.arrow.dir, r.arrow.windup);
-    if (r.intruder) nums.push(r.intruder.x, r.intruder.y);
+    if (r.intruder) pushWardenState(nums, r.intruder);
   }
 
   nums.push(state.score);
   // NOT included: prevX/prevY (render interpolation only), phaseTicks where it
   // is cosmetic, and anything derived rather than stored.
   return hashValues(0, nums);
+}
+
+// THE one place a WARDEN's hashable state is enumerated. Every WARDEN - patrol
+// or room intruder - goes through here, so a field added to one is added to all.
+function pushWardenState(nums, w) {
+  nums.push(w.x, w.y, w.routeIdx,
+    w.checkTicks, w.minX, w.maxX, w.minY, w.maxY,
+    w.slideTicks, w.slideAxis, w.slideSign);
 }
 
 const PHASE_ORDER = Object.keys(GAME_PHASES);
@@ -2296,11 +2368,6 @@ function gfxEndFrame(gfx) {
 // No DOM or AudioContext access at import time. Safe to import from tests/.
 
 
-const SIREN_BASE_HZ = 220;
-const SIREN_PEAK_HZ = 880;
-const SIREN_GAIN = 0.12;
-const SIREN_RAMP_SEC = 0.05;
-
 function createAudio() {
   return {
     ctx: null,
@@ -2349,8 +2416,8 @@ function setSirenLevel(audio, level) {
 
   if (level <= 0) {
     if (audio.sirenOsc) {
-      audio.sirenGain.gain.setTargetAtTime(0, audio.ctx.currentTime, SIREN_RAMP_SEC);
-      audio.sirenOsc.stop(audio.ctx.currentTime + SIREN_RAMP_SEC * 4);
+      audio.sirenGain.gain.setTargetAtTime(0, audio.ctx.currentTime, AUDIO.sirenRampSec);
+      audio.sirenOsc.stop(audio.ctx.currentTime + AUDIO.sirenRampSec * 4);
       audio.sirenOsc = null;
       audio.sirenGain = null;
     }
@@ -2366,9 +2433,9 @@ function setSirenLevel(audio, level) {
     audio.sirenGain.connect(audio.master);
     audio.sirenOsc.start();
   }
-  const hz = SIREN_BASE_HZ + (SIREN_PEAK_HZ - SIREN_BASE_HZ) * level;
-  audio.sirenOsc.frequency.setTargetAtTime(hz, audio.ctx.currentTime, SIREN_RAMP_SEC);
-  audio.sirenGain.gain.setTargetAtTime(SIREN_GAIN * level, audio.ctx.currentTime, SIREN_RAMP_SEC);
+  const hz = AUDIO.sirenBaseHz + (AUDIO.sirenPeakHz - AUDIO.sirenBaseHz) * level;
+  audio.sirenOsc.frequency.setTargetAtTime(hz, audio.ctx.currentTime, AUDIO.sirenRampSec);
+  audio.sirenGain.gain.setTargetAtTime(AUDIO.sirenGain * level, audio.ctx.currentTime, AUDIO.sirenRampSec);
 }
 
 function stopAllAudio(audio) {
@@ -2489,13 +2556,29 @@ function renderRoomView(gfx, state, alpha) {
   for (const corpse of room.corpses) {
     const cx = corpse.tx * t;
     const cy = corpse.ty * t;
-    const shrink = corpse.phase;
-    gfxFillRect(gfx, cx + shrink, cy + shrink, t - shrink * 2, t - shrink * 2, PAL_CORPSE);
-    for (let i = 0; i < t; i += 2) {
-      const px = cx + i;
-      const py = cy + (t - 1 - i);
-      if (px >= cx + shrink && px < cx + t - shrink && py >= cy + shrink && py < cy + t - shrink) {
-        gfxFillRect(gfx, px, py, 1, 1, PAL_CORPSE_HATCH);
+    // Section 11: lethality must NEVER be conveyed by hue alone, at EVERY decay
+    // phase - and the last phase is when a mistake costs most.
+    //
+    // Two arithmetic mistakes were made here before this shape survived. A
+    // fixed 2px diagonal stride left ONE hatch pixel at the final phase. Then
+    // scaling the stride to the span still left only TWO, because letting the
+    // box shrink by a pixel per phase makes it 2x2 by phase 3 and a 2x2 box
+    // cannot hold three diagonal marks - the geometry, not the stride, was the
+    // limit. Counts are asserted in tests/rooms.mjs rather than claimed here.
+    const shrink = Math.min(corpse.phase, TUNING.corpse.decayPhases - 2);
+    const span = t - shrink * 2;
+    gfxFillRect(gfx, cx + shrink, cy + shrink, span, span, PAL_CORPSE);
+
+    const stride = Math.max(1, Math.floor(span / 3));
+    for (let i = 0; i < span; i += stride) {
+      gfxFillRect(gfx, cx + shrink + i, cy + shrink + (span - 1 - i), 1, 1, PAL_CORPSE_HATCH);
+    }
+    // The last phase shares a size with the one before it, so it needs a
+    // different SHAPE to stay a "distinct broken silhouette": the second
+    // diagonal turns the hatch into an X.
+    if (corpse.phase >= TUNING.corpse.decayPhases - 1) {
+      for (let i = 0; i < span; i += stride) {
+        gfxFillRect(gfx, cx + shrink + i, cy + shrink + i, 1, 1, PAL_CORPSE_HATCH);
       }
     }
   }
@@ -2512,7 +2595,9 @@ function renderRoomView(gfx, state, alpha) {
   }
 
   if (room.arrow.alive) {
-    gfxFillRect(gfx, Math.round(room.arrow.x) - 1, Math.round(room.arrow.y) - 1, 2, 2, PAL_ARROW);
+    gfxFillRect(gfx,
+      Math.round(lerp(room.arrow.prevX, room.arrow.x, alpha)) - 1,
+      Math.round(lerp(room.arrow.prevY, room.arrow.y, alpha)) - 1, 2, 2, PAL_ARROW);
   }
 
   if (room.intruder) {
@@ -2562,7 +2647,9 @@ function renderFloorView(gfx, state, alpha) {
   // can see it pass straight through a WARDEN.
   const arrow = floor.arrow;
   if (arrow.alive) {
-    gfxFillRect(gfx, Math.round(arrow.x) - 1, Math.round(arrow.y) - 1, 2, 2, PAL_ARROW);
+    gfxFillRect(gfx,
+      Math.round(lerp(arrow.prevX, arrow.x, alpha)) - 1,
+      Math.round(lerp(arrow.prevY, arrow.y, alpha)) - 1, 2, 2, PAL_ARROW);
   }
 
   // WARDENs.

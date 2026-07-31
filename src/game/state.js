@@ -245,11 +245,13 @@ export function hashGameState(state) {
 
   // Corner-clipping state changes where a WARDEN goes next, so omitting it
   // could hide a divergence (section 12.1.1 inclusion test).
-  for (const w of floor.wardens) {
-    nums.push(w.x, w.y, w.routeIdx,
-      w.checkTicks, w.minX, w.maxX, w.minY, w.maxY,
-      w.slideTicks, w.slideAxis, w.slideSign);
-  }
+  //
+  // Routed through ONE helper deliberately. The room intruder is the same
+  // entity shape driven by the same updateWarden, and hashing it inline meant
+  // it silently got 2 of these 11 fields while patrol WARDENs got all 11. Two
+  // hand-maintained copies of an entity's hash is how that happens; there is
+  // now only one.
+  for (const w of floor.wardens) pushWardenState(nums, w);
 
   // Room looted flags, in a stable order.
   for (const room of floor.layout.rooms) nums.push(floor.looted[room.id] ? 1 : 0);
@@ -265,13 +267,21 @@ export function hashGameState(state) {
     for (const m of r.monsters) nums.push(m.x, m.y, m.dir, m.hp, m.alive ? 1 : 0);
     for (const c of r.corpses) nums.push(c.tx, c.ty, c.phase, c.phaseTicks);
     nums.push(r.arrow.alive ? 1 : 0, r.arrow.x, r.arrow.y, r.arrow.dir, r.arrow.windup);
-    if (r.intruder) nums.push(r.intruder.x, r.intruder.y);
+    if (r.intruder) pushWardenState(nums, r.intruder);
   }
 
   nums.push(state.score);
   // NOT included: prevX/prevY (render interpolation only), phaseTicks where it
   // is cosmetic, and anything derived rather than stored.
   return hashValues(0, nums);
+}
+
+// THE one place a WARDEN's hashable state is enumerated. Every WARDEN - patrol
+// or room intruder - goes through here, so a field added to one is added to all.
+function pushWardenState(nums, w) {
+  nums.push(w.x, w.y, w.routeIdx,
+    w.checkTicks, w.minX, w.maxX, w.minY, w.maxY,
+    w.slideTicks, w.slideAxis, w.slideSign);
 }
 
 const PHASE_ORDER = Object.keys(GAME_PHASES);

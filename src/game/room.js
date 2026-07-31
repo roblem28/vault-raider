@@ -135,8 +135,11 @@ export function updateRoom(room, player, input, descriptor, elapsedSec) {
     spawnIntrusionWarden(room, descriptor);
   }
   if (room.intruder) {
-    // Pure chase, ignores geometry cost. Corpses do not block it.
-    updateWarden(room.intruder, player, room.tiles, elapsedSec, speedMul, room.rng);
+    // Section 4.3: PURE chase, ignores geometry cost. The trailing `true` is
+    // load-bearing - without it the intruder rolls against pursuit bias like a
+    // patrol WARDEN and heads back to its spawn door on ~10% of ticks forever.
+    // Corpses do not block it (blocksWarden is false).
+    updateWarden(room.intruder, player, room.tiles, elapsedSec, speedMul, room.rng, true);
   }
 
   // Treasure pickup. Section 3.12: trap rooms spawn on PICKUP, not on entry.

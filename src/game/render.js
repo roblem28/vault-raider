@@ -117,13 +117,29 @@ export function renderRoomView(gfx, state, alpha) {
   for (const corpse of room.corpses) {
     const cx = corpse.tx * t;
     const cy = corpse.ty * t;
-    const shrink = corpse.phase;
-    gfxFillRect(gfx, cx + shrink, cy + shrink, t - shrink * 2, t - shrink * 2, PAL_CORPSE);
-    for (let i = 0; i < t; i += 2) {
-      const px = cx + i;
-      const py = cy + (t - 1 - i);
-      if (px >= cx + shrink && px < cx + t - shrink && py >= cy + shrink && py < cy + t - shrink) {
-        gfxFillRect(gfx, px, py, 1, 1, PAL_CORPSE_HATCH);
+    // Section 11: lethality must NEVER be conveyed by hue alone, at EVERY decay
+    // phase - and the last phase is when a mistake costs most.
+    //
+    // Two arithmetic mistakes were made here before this shape survived. A
+    // fixed 2px diagonal stride left ONE hatch pixel at the final phase. Then
+    // scaling the stride to the span still left only TWO, because letting the
+    // box shrink by a pixel per phase makes it 2x2 by phase 3 and a 2x2 box
+    // cannot hold three diagonal marks - the geometry, not the stride, was the
+    // limit. Counts are asserted in tests/rooms.mjs rather than claimed here.
+    const shrink = Math.min(corpse.phase, TUNING.corpse.decayPhases - 2);
+    const span = t - shrink * 2;
+    gfxFillRect(gfx, cx + shrink, cy + shrink, span, span, PAL_CORPSE);
+
+    const stride = Math.max(1, Math.floor(span / 3));
+    for (let i = 0; i < span; i += stride) {
+      gfxFillRect(gfx, cx + shrink + i, cy + shrink + (span - 1 - i), 1, 1, PAL_CORPSE_HATCH);
+    }
+    // The last phase shares a size with the one before it, so it needs a
+    // different SHAPE to stay a "distinct broken silhouette": the second
+    // diagonal turns the hatch into an X.
+    if (corpse.phase >= TUNING.corpse.decayPhases - 1) {
+      for (let i = 0; i < span; i += stride) {
+        gfxFillRect(gfx, cx + shrink + i, cy + shrink + i, 1, 1, PAL_CORPSE_HATCH);
       }
     }
   }
@@ -140,7 +156,9 @@ export function renderRoomView(gfx, state, alpha) {
   }
 
   if (room.arrow.alive) {
-    gfxFillRect(gfx, Math.round(room.arrow.x) - 1, Math.round(room.arrow.y) - 1, 2, 2, PAL_ARROW);
+    gfxFillRect(gfx,
+      Math.round(lerp(room.arrow.prevX, room.arrow.x, alpha)) - 1,
+      Math.round(lerp(room.arrow.prevY, room.arrow.y, alpha)) - 1, 2, 2, PAL_ARROW);
   }
 
   if (room.intruder) {
@@ -190,7 +208,9 @@ export function renderFloorView(gfx, state, alpha) {
   // can see it pass straight through a WARDEN.
   const arrow = floor.arrow;
   if (arrow.alive) {
-    gfxFillRect(gfx, Math.round(arrow.x) - 1, Math.round(arrow.y) - 1, 2, 2, PAL_ARROW);
+    gfxFillRect(gfx,
+      Math.round(lerp(arrow.prevX, arrow.x, alpha)) - 1,
+      Math.round(lerp(arrow.prevY, arrow.y, alpha)) - 1, 2, 2, PAL_ARROW);
   }
 
   // WARDENs.

@@ -5,7 +5,9 @@
 //
 // No DOM access. Safe to import from tests/.
 
-import { TUNING, DIRS, DIR_NEUTRAL, DIR_COUNT, GEOM, UNSTICK } from '../data/tuning.js';
+import {
+  TUNING, DIRS, DIR_NEUTRAL, DIR_COUNT, GEOM, UNSTICK, ARCHETYPE
+} from '../data/tuning.js';
 import {
   moveAxisSeparated, applyDoorwaySnap, aabbOverlap, tileCenterPx
 } from './collision.js';
@@ -75,7 +77,11 @@ export function updatePlayerFloor(player, input, mask, speedMul, blockedTiles) {
 // newbie trap, not a bug to fix.
 
 export function createArrowState() {
-  return { alive: false, x: 0, y: 0, dir: 2, windup: 0, pending: false };
+  // prevX/prevY exist so the arrow INTERPOLATES like every other actor. It was
+  // the one thing rendering un-interpolated next to lerped monsters and PIP,
+  // which made a clean miss look like a rendering glitch - on the single object
+  // that precision aiming is judged against.
+  return { alive: false, x: 0, y: 0, prevX: 0, prevY: 0, dir: 2, windup: 0, pending: false };
 }
 
 // THE one fire gate. Floor view and (from M3) room view both call this rather
@@ -103,11 +109,17 @@ export function updateArrow(arrow, player, mask) {
       const size = TUNING.player.hitboxFloor;
       arrow.x = player.x + size / 2;
       arrow.y = player.y + size / 2;
+      // Spawn with prev == current so the first rendered frame does not lerp
+      // in from wherever the last arrow died.
+      arrow.prevX = arrow.x;
+      arrow.prevY = arrow.y;
     }
     return;
   }
   if (!arrow.alive) return;
 
+  arrow.prevX = arrow.x;
+  arrow.prevY = arrow.y;
   const d = DIRS[arrow.dir];
   arrow.x += d.dx * TUNING.arrow.speed;
   arrow.y += d.dy * TUNING.arrow.speed;
@@ -166,7 +178,12 @@ export function wardenPursuitBias(elapsedSec) {
   return Math.min(TUNING.warden.pursuitBiasCap, TUNING.warden.pursuitBiasRate * elapsedSec);
 }
 
-export function updateWarden(warden, player, mask, elapsedSec, speedMul, rng) {
+// pureChase: section 4.3's intrusion mode. An intruding WARDEN "switches to
+// PURE chase" - it does not roll against pursuit bias at all. Reusing the
+// patrol path unchanged left the intruder targeting its own spawn door on ~10%
+// of ticks forever, because bias caps at pursuitBiasCap (0.9) and can never
+// reach 1.0. That is patrol behaviour with a one-point route, not hunting.
+export function updateWarden(warden, player, mask, elapsedSec, speedMul, rng, pureChase) {
   warden.prevX = warden.x;
   warden.prevY = warden.y;
 
@@ -178,7 +195,10 @@ export function updateWarden(warden, player, mask, elapsedSec, speedMul, rng) {
   const speed = warden.speedMul * speedMul;
 
   // Each tick, with probability bias, step toward PIP instead of the waypoint.
-  const chase = rng.nextFloat() < wardenPursuitBias(elapsedSec);
+  // The roll is consumed either way so that RNG consumption order - and
+  // therefore replay determinism - does not depend on which mode is active.
+  const roll = rng.nextFloat();
+  const chase = pureChase ? true : roll < wardenPursuitBias(elapsedSec);
 
   let targetX;
   let targetY;
@@ -309,11 +329,6 @@ export function wardenTouchesPlayer(warden, player, inRoom) {
   return aabbOverlap(p.x, p.y, p.w, p.h, w.x, w.y, w.w, w.h);
 }
 
-// Section 4.4 gives CRAWLER no speed of its own, only "predictable". It moves
-// slower than PIP so the floor-1 teaching monster can be walked away from.
-// INVENTED - see docs/NOTES.md M3-A1.
-const CRAWLER_SPEED_FRAC = 0.55;
-
 // --- PIP in room view ------------------------------------------------------
 
 export function updatePlayerRoom(player, input, tiles, speedMul, blockedTiles) {
@@ -385,7 +400,7 @@ export function updateMonster(monster, tiles, speedMul) {
   monster.prevY = monster.y;
 
   const size = TUNING.monster.hurtbox;
-  const speed = TUNING.player.speedRoom * speedMul * CRAWLER_SPEED_FRAC;
+  const speed = TUNING.player.speedRoom * speedMul * ARCHETYPE.crawlerSpeedFrac;
 
   for (const candidate of crawlerTurnOrder(monster.dir, monster.hand)) {
     const d = DIRS[candidate];
