@@ -157,7 +157,7 @@ export const GEOM = {
 // calls his only defensive tool. Measured baseline on floor 1: median catch
 // 33 s, worst 48 s, against a 45 s floor timer.
 //
-// These are the knobs to turn at the feel gate. See docs/NOTES.md M2-B3.
+// These are the knobs to turn at the feel gate. See docs/NOTES.md B3.
 // --- ARCHETYPE -------------------------------------------------------------
 // Not transcribed | INSIDE simulation | determinism-CRITICAL | BALANCE-AFFECTING
 //

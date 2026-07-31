@@ -1,7 +1,7 @@
-# VAULT RAIDER — Game Spec v0.8
+# VAULT RAIDER — Game Spec v0.9
 **An arcade dungeon crawler in the tradition of Venture (Exidy 1981 /
 ColecoVision 1982)** — nominative reference, see §0.1
-Date: 2026-07-30 · Owner: Box of Rox LLC · Supersedes v0.7
+Date: 2026-07-31 · Owner: Box of Rox LLC · Supersedes v0.8
 
 Changes from v0.1 are marked **[v0.2]**. Changes from v0.2 are marked **[v0.3]**
 (build output naming, deployment §16). Changes from v0.3 are marked **[v0.4]**
@@ -27,6 +27,10 @@ Changes from v0.7 are marked **[v0.8]** — what M2 found by building floor view
 §4.3.1's corner-clipping unstick, the §7.1 floor-authoring invariants (§7.1's
 own example violated them), §14's M2 row no longer naming a WARDEN count that
 contradicts §4.3, and §6.1 split into three constant blocks by provenance.
+Changes from v0.8 are marked **[v0.9]** — the §4.4 dodge roll corrected from
+per-tick to ONCE PER ARROW PER MONSTER. `dodgeSkill` values were authored as
+per-shot probabilities and implemented as per-tick rolls, which compounded them
+to near-certainty; at HIGH that made a monster unhittable rather than hard.
 
 ---
 
@@ -325,7 +329,42 @@ Six behaviors, reskinned per room.
 | `BRUTE` | Lumbering patrol | HIGH | 2 | Body-blocks doorways |
 | `BLINKER` | Teleport / home to PIP | HIGH | 1 | Floor 3 only; near-unshootable |
 
-Dodge check: on each tick an arrow is within `dodgeLookahead = 24 px` and aligned to the monster's axis, roll `rng() < dodgeSkill[tier] × (shotIsDiagonal ? 0.5 : 1.0)`. On success, sidestep 1 tile perpendicular.
+**[v0.9] Dodge check — ONCE PER ARROW PER MONSTER, not once per tick.**
+
+When an arrow **first enters** a monster's `dodgeLookahead = 24 px` window and is
+aligned to that monster's axis, roll **once**:
+
+```
+rng() < dodgeSkill[tier] × (shotIsDiagonal ? diagonalDodgeMul : 1.0)
+```
+
+On success, sidestep 1 tile perpendicular. Whether it rolled or not, that
+monster does not roll again for that arrow.
+
+**`dodgeSkill` values are PER-SHOT AGGREGATE probabilities.** LOW means a 15%
+chance of dodging a shot. Not 15% per tick.
+
+v0.8 and earlier said "on each tick", which compounded them. A 3.5 px/tick arrow
+spends roughly 7 ticks inside a 24 px window, so the real aggregates were:
+
+| Tier | Label | Compounded per-tick reality |
+|---|---|---|
+| `LOW` 0.15 | 15% | **68%** |
+| `MED` 0.45 | 45% | **98.5%** |
+| `HIGH` 0.80 | 80% | **99.999%** |
+
+Only `LOW` shipped at M3, so only `LOW` was observed. At M6 `BRUTE` and
+`BLINKER` at HIGH would have been **unhittable** — not hard, unhittable — and it
+would have surfaced as "the game is broken" three milestones downstream.
+
+Four things improve, none regress:
+
+- The labels mean what they say.
+- The sidestep is one decisive commitment rather than a repeated coin flip,
+  which reads better and matches "sidestep 1 tile".
+- Fewer RNG draws per tick, so determinism has a smaller surface.
+- `diagonalDodgeMul` now halves an actual 15/45/80 rather than a compounded
+  near-certainty, restoring §3.10's "diagonals beat cardinals" as a real edge.
 
 **[v0.5]** Every monster's hurt box is **8×8 centered** (§4.1), whatever its
 sprite size. `BRUTE` and `BLINKER` differ in HP, never in hurt box.

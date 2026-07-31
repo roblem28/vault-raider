@@ -19,7 +19,7 @@ import {
   createRoomRuntime, playerOnSafeTile, intrusionWarningLevel
 } from '../src/game/room.js';
 import {
-  createCorpse, createMonster, shootCorpse, createWarden, updateWarden
+  createCorpse, createMonster, shootCorpse, createWarden, updateWarden, monsterDodgeCheck
 } from '../src/game/entities.js';
 import { advanceAccumulator } from '../src/core/loop.js';
 import { boxHitsTiles } from '../src/game/collision.js';
@@ -668,6 +668,83 @@ console.log('\n# intrusion warning ramp (sections 3.3, 10, 11)');
     }
     return true;
   })());
+}
+
+console.log('\n# dodge rate MATCHES ITS LABEL at every tier (section 4.4 [v0.9])');
+{
+  // dodgeSkill values are PER-SHOT probabilities. Rolling per tick compounded
+  // them: ~7 ticks in a 24px window turned LOW 0.15 into 68%, MED 0.45 into
+  // 98.5%, HIGH 0.80 into 99.999%. Only LOW shipped at M3 so only LOW was
+  // observed; HIGH would have been unhittable at M6.
+  //
+  // Fires N arrows per tier at a monster and compares the observed dodge rate
+  // to the label. Mutation-verified: reverting to a per-tick roll puts LOW back
+  // near 68% and fails this.
+  // Measured by calling monsterDodgeCheck DIRECTLY and reading its return.
+  //
+  // An earlier version inferred a dodge from the monster's DISPLACEMENT and
+  // read every tier at roughly half its label - 0.083 / 0.253 / 0.415. That was
+  // the measurement, not the code: the roll succeeds, then the perpendicular
+  // sidestep is blocked by a wall about half the time, because the sign is
+  // random and a 2-tall lane has wall on one side. Displacement measures
+  // "dodged AND had somewhere to go". The label is about the roll.
+  const TRIALS = 2000;
+  const TOLERANCE = 0.03;
+
+  for (const tier of ['LOW', 'MED', 'HIGH']) {
+    const state = emptyRoomState('coil', 0xD0D0);
+    let dodges = 0;
+    let doubleRolled = 0;
+    for (let trial = 0; trial < TRIALS; trial++) {
+      const m = createMonster({ type: 'CRAWLER', tx: 14, ty: 3, dodge: tier }, state.rng);
+      // West-bound shot, on-axis, well inside dodgeLookahead.
+      const arrow = {
+        alive: true, id: trial + 1, dir: 6,
+        x: m.x + TUNING.monster.hurtbox / 2 + 10,
+        y: m.y + TUNING.monster.hurtbox / 2
+      };
+      if (monsterDodgeCheck(m, arrow, state.rng, ROOM_DEFS.coil.tiles)) dodges++;
+      // ONE roll per arrow per monster: a second call with the SAME arrow must
+      // never roll again, whichever way the first went.
+      if (monsterDodgeCheck(m, arrow, state.rng, ROOM_DEFS.coil.tiles) !== false) doubleRolled++;
+    }
+    const expected = TUNING.dodgeSkill[tier];
+    const observed = dodges / TRIALS;
+    console.log(`     ${tier.padEnd(4)} label ${expected.toFixed(2)}  observed ${observed.toFixed(3)}  (${dodges}/${TRIALS})`);
+    assert(`${tier}: never rolls twice for the same arrow`, doubleRolled === 0,
+      `${doubleRolled} double rolls`);
+    assert(`${tier}: observed dodge rate is within ${TOLERANCE} of its label`,
+      Math.abs(observed - expected) <= TOLERANCE,
+      `label ${expected}, observed ${observed.toFixed(3)}`);
+
+    // THE GUARD FOR THE ACTUAL DEFECT. The two assertions above are not enough
+    // on their own: reverting to per-tick rolling still passes the rate check,
+    // because two calls only lift LOW from 0.15 to 0.28. The real scenario is
+    // ~7 ticks inside the 24px window, which is what compounds 0.15 to 0.68.
+    //
+    // So: hold ONE arrow in the window for seven ticks and require the
+    // aggregate to still equal the label.
+    const TICKS_IN_WINDOW = 7;
+    let aggregate = 0;
+    for (let trial = 0; trial < TRIALS; trial++) {
+      const m = createMonster({ type: 'CRAWLER', tx: 14, ty: 3, dodge: tier }, state.rng);
+      const arrow = {
+        alive: true, id: 900000 + trial, dir: 6,
+        x: m.x + TUNING.monster.hurtbox / 2 + 10,
+        y: m.y + TUNING.monster.hurtbox / 2
+      };
+      let dodged = false;
+      for (let t = 0; t < TICKS_IN_WINDOW; t++) {
+        if (monsterDodgeCheck(m, arrow, state.rng, ROOM_DEFS.coil.tiles)) dodged = true;
+      }
+      if (dodged) aggregate++;
+    }
+    const aggRate = aggregate / TRIALS;
+    console.log(`          held ${TICKS_IN_WINDOW} ticks in window -> ${aggRate.toFixed(3)}`);
+    assert(`${tier}: still ${expected} after ${TICKS_IN_WINDOW} ticks in the window`,
+      Math.abs(aggRate - expected) <= TOLERANCE,
+      `label ${expected}, got ${aggRate.toFixed(3)} - this is the per-tick compounding defect`);
+  }
 }
 
 console.log('\n# dodge consumes RNG deterministically (sections 3.10, 4.4, 12.1.1)');

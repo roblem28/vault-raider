@@ -493,6 +493,91 @@ Three options for the gate, cheapest first: drop `dodgeSkill.LOW` toward
 0.05–0.08; drop `dodgeLookahead` for the LOW tier only; or roll once per
 arrow-entering-range instead of per tick. Raise at the checkpoint.
 
+### M3-F7 — FOUNDATION WRONG (SPEC semantics), fixed: dodge was per-TICK
+
+**The constants were fine. The semantics were wrong, and they were wrong in the
+spec, not just the code.**
+
+`dodgeSkill` values were authored as **per-shot** probabilities. §4.4 said "on
+each tick an arrow is within `dodgeLookahead`… roll", which implemented them as
+per-tick. A 3.5 px/tick arrow spends ~7 ticks inside a 24 px window, so:
+
+| Tier | Label | Compounded per-tick reality |
+|---|---|---|
+| `LOW` 0.15 | 15% | **68%** |
+| `MED` 0.45 | 45% | **98.5%** |
+| `HIGH` 0.80 | 80% | **99.999%** |
+
+Only `LOW` shipped at M3, so only `LOW` was observed. **At M6, `BRUTE` and
+`BLINKER` at HIGH would have been unhittable** — not hard, unhittable — and it
+would have surfaced three milestones downstream as "the game is broken".
+
+Ruled and amended into SPEC §4.4 as `[v0.9]`: roll **once per arrow per
+monster**, on first entry into the lookahead window. Implemented with an arrow
+`id` and a `dodgedArrowId` on the monster, both in the determinism hash.
+
+Measured after the fix — labels now mean what they say:
+
+| Tier | Label | Single roll | Held 7 ticks in window |
+|---|---|---|---|
+| LOW | 0.15 | 0.144 | 0.148 |
+| MED | 0.45 | 0.457 | 0.440 |
+| HIGH | 0.80 | 0.814 | 0.816 |
+
+**A note on the test, because the first version was weak.** Asserting the rate
+over two calls is not enough: reverting to per-tick still passes it, since two
+rolls only lift LOW from 0.15 to 0.28. The assertion that actually guards the
+defect holds ONE arrow in the window for seven ticks and requires the aggregate
+to still equal the label. Mutation-verified.
+
+### M3-D5 — OPEN QUESTION for the feel gate: geometry silently scales dodge
+
+**a) What the code does when the sidestep is blocked.** Nothing. It picks one
+random direction, tries it once, and keeps whatever `moveAxisSeparated` returns:
+
+```js
+const perp = shot.dx !== 0 ? { dx: 0, dy: 1 } : { dx: 1, dy: 0 };
+const sign = rng.nextFloat() < 0.5 ? -1 : 1;
+const moved = moveAxisSeparated(monster.x, monster.y, size, size,
+  perp.dx * TUNING.tile * sign, perp.dy * TUNING.tile * sign, tiles, null);
+monster.x = moved.x;
+monster.y = moved.y;
+return true;
+```
+
+If that direction is wall, the monster stays put, eats the arrow, and **still
+returns `true`** with `dodgedArrowId` set — so it does not retry, and does not
+get a second roll. It does not try the opposite direction.
+
+**b) Measured variance by room shape. 4000 trials per cell.**
+
+| Shape | LOW (0.15) | MED (0.45) | HIGH (0.80) |
+|---|---|---|---|
+| Open hall, ≥3 tiles tall | 0.149 | 0.449 | **0.808** |
+| Wide lane, 4 tall | 0.149 | 0.449 | **0.808** |
+| 2-tall lane (THE COIL) | 0.077 | 0.226 | **0.402** |
+| 1-tall corridor | 0.000 | 0.000 | **0.000** |
+
+The roll rate is identical everywhere — 0.149 / 0.449 / 0.808. What changes is
+whether the sidestep lands. In a 2-tall lane one of the two directions is always
+wall, so **exactly half** of successful dodges are eaten. In a 1-tall corridor
+**every** dodge is eaten and the tier is inert.
+
+**So HIGH swings 80% → 40% → 0% purely on room shape.** That is a balance
+mechanic nobody designed, and eleven more rooms get authored at M4 and M7 —
+including the T-shaped `THE SUMP` and Y-shaped `THE FORK`, which are exactly the
+shapes that mix wide and narrow bands in one room.
+
+**c) §4.4 says nothing about blocked sidesteps.** It says only "On success,
+sidestep 1 tile perpendicular." The omission is in the spec.
+
+**Not fixed, deliberately** — this changes combat feel and the feel gate is
+next. Trying the opposite direction when the first is blocked would preserve the
+label, is what a real dodge looks like, and costs one branch; but it should be
+felt before it is ruled. **If the gate rules for it, §4.4 must be amended before
+any room authoring at M4**, because otherwise twelve layouts get designed
+against dodge rates that later change.
+
 ### M3-D1 — AT RISK, accepted: two arrow slots, one gate
 
 `floor.arrow` and `room.arrow` are separate objects sharing one `requestFire`

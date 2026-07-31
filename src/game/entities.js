@@ -81,7 +81,13 @@ export function createArrowState() {
   // the one thing rendering un-interpolated next to lerped monsters and PIP,
   // which made a clean miss look like a rendering glitch - on the single object
   // that precision aiming is judged against.
-  return { alive: false, x: 0, y: 0, prevX: 0, prevY: 0, dir: 2, windup: 0, pending: false };
+  // `id` increments per spawn so a monster can tell one shot from the next
+  // (section 4.4 [v0.9]). Without it, "already rolled for this arrow" cannot be
+  // expressed and the roll silently reverts to per-tick.
+  return {
+    alive: false, x: 0, y: 0, prevX: 0, prevY: 0,
+    dir: 2, windup: 0, pending: false, id: 0
+  };
 }
 
 // THE one fire gate. Floor view and (from M3) room view both call this rather
@@ -102,6 +108,7 @@ export function updateArrow(arrow, player, mask) {
     if (arrow.windup <= 0) {
       arrow.pending = false;
       arrow.alive = true;
+      arrow.id++;
       // Section 4.2: direction is PIP's PERSISTENT ENTITY FACING at the SPAWN
       // tick - not the fire-input tick, and never the input struct. This is
       // what makes re-aiming during the 4-tick windup work.
@@ -375,6 +382,10 @@ export function createMonster(def, rng) {
     dir: 2,
     hand: (def.tx + def.ty) % 2 === 0 ? 1 : -1,
     alive: true,
+    // Section 4.4 [v0.9]: the dodge roll happens ONCE per arrow per monster, on
+    // first entry into the lookahead window. This holds the id of the arrow
+    // already rolled for, so a monster cannot re-roll every tick.
+    dodgedArrowId: -1,
     spawnTx: def.tx,
     spawnTy: def.ty,
     seed: rng.nextU32()
@@ -425,11 +436,18 @@ export function monsterTouchesPlayer(monster, player) {
   return aabbOverlap(p.x, p.y, p.w, p.h, m.x, m.y, m.w, m.h);
 }
 
-// Section 4.4 dodge check: when an arrow is within dodgeLookahead and aligned
-// to the monster's axis, roll against the tier, halved for a diagonal shot
-// (section 3.10 - diagonals beat cardinals). On success, sidestep one tile.
+// Section 4.4 [v0.9]: ONE roll per arrow per monster, taken the first time that
+// arrow is inside dodgeLookahead and aligned to the monster's axis.
+//
+// dodgeSkill values are PER-SHOT probabilities. Rolling every tick compounded
+// them: a 3.5px/tick arrow spends ~7 ticks in a 24px window, turning LOW 0.15
+// into 68%, MED 0.45 into 98.5%, and HIGH 0.80 into 99.999% - unhittable rather
+// than hard. Only LOW shipped at M3, so only LOW was ever observed; BRUTE and
+// BLINKER at HIGH would have surfaced it at M6 as "the game is broken".
 export function monsterDodgeCheck(monster, arrow, rng, tiles) {
   if (!monster.alive || !arrow.alive) return false;
+  // Already resolved this arrow. Not a re-roll, not a second chance.
+  if (monster.dodgedArrowId === arrow.id) return false;
 
   const mx = monster.x + TUNING.monster.hurtbox / 2;
   const my = monster.y + TUNING.monster.hurtbox / 2;
@@ -441,6 +459,10 @@ export function monsterDodgeCheck(monster, arrow, rng, tiles) {
     ? true
     : (shot.dx !== 0 ? Math.abs(arrow.y - my) < TUNING.tile : Math.abs(arrow.x - mx) < TUNING.tile);
   if (!aligned) return false;
+
+  // Committed: this monster has now had its one roll against this arrow,
+  // whichever way it goes.
+  monster.dodgedArrowId = arrow.id;
 
   const skill = TUNING.dodgeSkill[monster.dodge];
   const chance = skill * (shot.diagonal ? TUNING.monster.diagonalDodgeMul : 1.0);

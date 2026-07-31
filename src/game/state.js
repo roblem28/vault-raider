@@ -252,7 +252,7 @@ export function hashGameState(state) {
   nums.push(p.x, p.y, p.facing, p.lives, p.invulnTicks);
 
   const a = floor.arrow;
-  nums.push(a.alive ? 1 : 0, a.x, a.y, a.dir, a.windup, a.pending ? 1 : 0);
+  nums.push(a.alive ? 1 : 0, a.x, a.y, a.dir, a.windup, a.pending ? 1 : 0, a.id);
 
   // Corner-clipping state changes where a WARDEN goes next, so omitting it
   // could hide a divergence (section 12.1.1 inclusion test).
@@ -275,7 +275,9 @@ export function hashGameState(state) {
     const r = floor.rooms[room.id];
     if (!r) { nums.push(0); continue; }
     nums.push(1, r.treasureTaken ? 1 : 0, r.intruder ? 1 : 0);
-    for (const m of r.monsters) nums.push(m.x, m.y, m.dir, m.hp, m.alive ? 1 : 0);
+    for (const m of r.monsters) {
+      nums.push(m.x, m.y, m.dir, m.hp, m.alive ? 1 : 0, m.dodgedArrowId);
+    }
     for (const c of r.corpses) nums.push(c.tx, c.ty, c.phase, c.phaseTicks);
     // No per-room arrow to hash: there is one arrow and it is hashed above
     // with the rest of the floor state.
